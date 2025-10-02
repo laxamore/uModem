@@ -18,7 +18,7 @@ static pthread_t reader_thread;
 static volatile int reader_running = 0;
 
 // Default serial device path, can be changed
-static const char *serial_dev = "/dev/ttyUSB2";
+static const char *serial_dev = "/dev/ttyUSB0";
 
 /* --- Reader thread: continuously read from serial and push to buffer --- */
 static void *serial_reader(void *arg)
@@ -32,17 +32,14 @@ static void *serial_reader(void *arg)
     if (n > 0)
     {
       pthread_mutex_lock(&hal_mutex);
-      umodem_buffer_push((const uint8_t *)buf, (size_t)n);
+      umodem_buffer_push(buf, (size_t)n);
       pthread_mutex_unlock(&hal_mutex);
     }
     else if (n < 0)
     {
-      // avoid spamming logs on EAGAIN/EINTR
       if (errno != EAGAIN && errno != EINTR)
       {
-#if UMODEM_ENABLE_LOG == 1
         perror("serial read failed");
-#endif
         usleep(1000);
       }
     }
@@ -56,14 +53,27 @@ static void *serial_reader(void *arg)
   return nullptr;
 }
 
+static void umodem_hal_cleanup()
+{
+  if (serial_fd != -1)
+  {
+    reader_running = 0;                   // signal thread to exit
+    pthread_join(reader_thread, nullptr); // wait for thread
+    close(serial_fd);                     // close serial
+    serial_fd = -1;
+  }
+}
+
+void umodem_hal_deinit()
+{
+  umodem_hal_cleanup();
+}
+
 void umodem_hal_init()
 {
   if (serial_fd != -1)
   {
-    reader_running = 0;
-    pthread_join(reader_thread, nullptr);
-    close(serial_fd);
-    serial_fd = -1;
+    umodem_hal_cleanup();
   }
 
   serial_fd = open(serial_dev, O_RDWR | O_NOCTTY | O_SYNC);
@@ -72,6 +82,9 @@ void umodem_hal_init()
     perror("Failed to open serial device");
     return;
   }
+
+  int flags = fcntl(serial_fd, F_GETFL, 0);
+  fcntl(serial_fd, F_SETFL, flags | O_NONBLOCK);
 
   struct termios tty;
   if (tcgetattr(serial_fd, &tty) != 0)
@@ -92,7 +105,7 @@ void umodem_hal_init()
   tty.c_iflag &= ~IGNBRK;                     // disable break processing
   tty.c_lflag = 0;                            // no signaling chars, no echo
   tty.c_oflag = 0;                            // no remapping, no delays
-  tty.c_cc[VMIN] = 1;                         // read blocks until 1 char arrives
+  tty.c_cc[VMIN] = 0;                         // read block if available, if not dont block
   tty.c_cc[VTIME] = 1;                        // 0.1s read timeout
 
   tty.c_iflag &= ~(IXON | IXOFF | IXANY); // no SW flow control
@@ -131,7 +144,7 @@ int umodem_hal_send(const uint8_t *buf, size_t len)
   return (int)written;
 }
 
-int umodem_hal_read()
+int umodem_hal_read(uint8_t* buf, size_t len)
 {
   return 0;
 }

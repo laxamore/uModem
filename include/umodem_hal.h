@@ -57,6 +57,11 @@ extern "C"
   void umodem_hal_init();
 
   /**
+   * @brief Deinitialize the modem transport (e.g., UART, USB, socket).
+   */
+  void umodem_hal_deinit();
+
+  /**
    * @brief Send data to the modem.
    *
    * This function must transmit the given bytes to the modem **synchronously**.
@@ -71,8 +76,12 @@ extern "C"
    * @brief Read any avialble data from modem.
    * 
    * This function read data from modem if available and passed to umodem buffer.
+   * 
+   * @param buf Pointer to readed data to store.
+   * @param len Number of bytes can be stored.
+   * @return Number of bytes successfully stored into the buffer, or negative on error.
    */
-  int umodem_hal_read();
+  int umodem_hal_read(uint8_t* buf, size_t len);
 
   /**
    * @brief Return monotonic time in milliseconds.
@@ -109,20 +118,6 @@ extern "C"
    * Must be implemented even if empty.
    */
   void umodem_hal_unlock(void);
-
-  /**
-   * @brief Set hardware power on if any for the module.
-   *
-   * Must be implemented even if empty.
-   */
-  void umodem_hal_set_power_on(void);
-
-  /**
-   * @brief Set hardware power off if any for the module.
-   *
-   * Must be implemented even if empty.
-   */
-  void umodem_hal_set_power_off(void);
 
 #ifdef __cplusplus
 }

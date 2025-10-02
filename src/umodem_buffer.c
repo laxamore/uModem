@@ -24,6 +24,9 @@ void umodem_buffer_init(void)
 
 size_t umodem_buffer_push(const uint8_t *data, size_t len)
 {
+  if (data == NULL)
+    return 0;
+
   size_t free_space;
   size_t used;
 
@@ -57,13 +60,94 @@ size_t umodem_buffer_push(const uint8_t *data, size_t len)
     memcpy(&ring.buf[0], data + space_end, len - space_end);
     ring.head = (len - space_end);
   }
+
+  ring.count += len;
+  return len;
 }
 
-size_t umodem_buffer_pop(uint8_t *dst, size_t len)
+int umodem_buffer_pop(uint8_t *dst, size_t len)
 {
+  if (dst == NULL || ring.count < len)
+    return -1;
+
+  if (ring.tail + len > UMODEM_RX_BUF_SIZE)
+  {
+    size_t first_part = UMODEM_RX_BUF_SIZE - ring.tail;
+    size_t second_part = len - first_part;
+    memcpy(dst, &ring.buf[ring.tail], first_part);
+    memcpy(dst + first_part, ring.buf, second_part);
+    ring.tail = second_part;
+  }
+  else
+  {
+    memcpy(dst, &ring.buf[ring.tail], len);
+    ring.tail = (ring.tail + len == UMODEM_RX_BUF_SIZE) ? 0 : ring.tail + len;
+  }
+
+  ring.count -= len;
+  return len;
 }
 
-int umodem_buffer_find(uint8_t *expect)
+int umodem_buffer_peek_from(uint8_t *dst, size_t offset, size_t len)
 {
-  return -1;
+  if (dst == NULL || len == 0)
+    return -1;
+
+  if (offset + len > ring.count)
+    return -1;
+
+  size_t read_pos = (ring.tail + offset) % UMODEM_RX_BUF_SIZE;
+
+  if (read_pos + len <= UMODEM_RX_BUF_SIZE)
+  {
+    memcpy(dst, &ring.buf[read_pos], len);
+  }
+  else
+  {
+    size_t first_part = UMODEM_RX_BUF_SIZE - read_pos;
+    size_t second_part = len - first_part;
+    memcpy(dst, &ring.buf[read_pos], first_part);
+    memcpy(dst + first_part, ring.buf, second_part);
+  }
+
+  return (int)len;
+}
+
+int umodem_buffer_peek(uint8_t *dst, size_t len)
+{
+  return umodem_buffer_peek_from(dst, 0, len);
+}
+
+int umodem_buffer_find(uint8_t *expect, size_t len)
+{
+  if (expect == NULL || len == 0 || ring.count < len)
+    return -1;
+
+  uint8_t linear_buf[ring.count];
+  if (umodem_buffer_peek_from(linear_buf, 0, ring.count) != (int)ring.count)
+    return -1;
+
+  uint8_t *found = memmem(linear_buf, ring.count, expect, len);
+  return found ? (int)(found - linear_buf) : -1;
+}
+
+int umodem_buffer_find_from(const uint8_t *pattern, size_t pattern_len, size_t start_offset)
+{
+  if (pattern == NULL || pattern_len == 0)
+    return -1;
+
+  if (start_offset >= ring.count)
+    return -1;
+
+  size_t search_len = ring.count - start_offset;
+  if (search_len < pattern_len)
+    return -1;
+
+  uint8_t linear_buf[search_len];
+
+  if (umodem_buffer_peek_from(linear_buf, start_offset, search_len) != (int)search_len)
+    return -1;
+
+  uint8_t *found = memmem(linear_buf, search_len, pattern, pattern_len);
+  return found ? (int)(found - linear_buf) + (int)start_offset : -1;
 }

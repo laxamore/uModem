@@ -1,15 +1,3 @@
-/**
- * @file umodem.h
- * @brief High-level modem control library API.
- *
- * This library abstracts modem communication (e.g., AT command handling)
- * and provides a clean, event-driven interface for common operations.
- *
- * Thread safety: All functions are NOT thread-safe.
- * umodem_poll() must be called from a single thread.
- * Event callbacks are invoked from the umodem_poll() context.
- */
-
 #ifndef uMODEM_H_
 #define uMODEM_H_
 
@@ -22,31 +10,41 @@
 extern "C"
 {
 #endif
-
-  /* ==================== Result Codes ==================== */
-
   typedef enum
   {
-    UMODEM_OK = 0,             ///< Success
-    UMODEM_ERR = -1,           ///< General error
-    UMODEM_TIMEOUT = -2,       ///< Operation timed out
-    UMODEM_PARAM = -3,         ///< Invalid parameter
-    UMODEM_NO_NETWORK = -4,    ///< Network not available
+    UMODEM_OK = 0,                // Success
+    UMODEM_ERR = -1,              // General error
+    UMODEM_TIMEOUT = -2,          // Operation timed out
+    UMODEM_PARAM = -3,            // Invalid parameter
+    UMODEM_SIM_NOT_INSERTED = -4, // Sim not inserted
+    UMODEM_URC_IGNORE = -5        // Ignore result
   } umodem_result_t;
 
-  /* ==================== Event Types ==================== */
+  typedef enum
+  {
+    UMODEM_NO_EVENT = 0,
+    UMODEM_EVENT_URC = 1,         // Unsolicited Result Code (e.g., +CMTI, +CREG)
+    UMODEM_EVENT_NET_UP = 2,      // Successfully attached to cellular network
+    UMODEM_EVENT_NET_DOWN = 3,    // Detached or lost network registration
+    UMODEM_EVENT_DATA_UP = 4,     // Data connection (PDP context) activated
+    UMODEM_EVENT_DATA_DOWN = 5,   // Data connection deactivated
+    UMODEM_EVENT_SMS_RECEIVED = 6 // New SMS received (if SMS monitoring enabled)
+  } umodem_event_t;
 
   typedef enum
   {
-    UMODEM_EVENT_URC,         ///< Unsolicited Result Code (e.g., +CMTI, +CREG)
-    UMODEM_EVENT_NET_UP,      ///< Successfully attached to cellular network
-    UMODEM_EVENT_NET_DOWN,    ///< Detached or lost network registration
-    UMODEM_EVENT_DATA_UP,     ///< Data connection (PDP context) activated
-    UMODEM_EVENT_DATA_DOWN,   ///< Data connection deactivated
-    UMODEM_EVENT_SMS_RECEIVED ///< New SMS received (if SMS monitoring enabled)
-  } umodem_event_t;
+    UMODEM_SOCK,
+    UMODEM_HTTP,
+    UMODEM_MQTT,
+    UMODEM_PPP
+  } umodem_mode_t;
 
-  /* ==================== Callbacks ==================== */
+  typedef struct
+  {
+    char apn[32];
+    char user[32];
+    char pass[32];
+  } umodem_apn_t;
 
   /**
    * @brief Event callback function signature.
@@ -58,17 +56,19 @@ extern "C"
    */
   typedef void (*umodem_event_cb_t)(void *user_ctx, umodem_event_t event, const void *data, size_t len);
 
-  /* ==================== Core Lifecycle ==================== */
-
   /**
    * @brief Initialize the modem library.
    * Must be called once before any other function.
+   *
+   * @param mode Mode: SOCK, HTTP, MQTT, or PPP.
+   *
    * @return UMODEM_OK on success.
    */
-  umodem_result_t umodem_init(uint32_t timeout_ms);
+  umodem_result_t umodem_init(umodem_mode_t mode, umodem_apn_t *apn);
 
   /**
    * @brief Deinitialize the modem library and power off modem.
+   *
    * @return UMODEM_OK on success.
    */
   umodem_result_t umodem_deinit(void);
@@ -79,63 +79,29 @@ extern "C"
    */
   void umodem_poll(void);
 
-  /* ==================== Power & Readiness ==================== */
-
   /**
    * @brief Power on the modem hardware (if controllable).
+   *
    * @return UMODEM_OK on success.
    */
   umodem_result_t umodem_power_on(void);
 
   /**
    * @brief Power off the modem hardware.
+   *
    * @return UMODEM_OK on success.
    */
   umodem_result_t umodem_power_off(void);
 
-  /**
-   * @brief Check if modem is ready to accept commands.
-   * @return 1 if ready, 0 if not, negative on error.
-   */
-  int umodem_is_ready(void);
-
-  /* ==================== Network & Device Info ==================== */
-
   umodem_result_t umodem_get_imei(char *buf, size_t buf_size);
+
   umodem_result_t umodem_get_iccid(char *buf, size_t buf_size);
-  umodem_result_t umodem_get_model(char *buf, size_t buf_size);
-  umodem_result_t umodem_get_firmware_version(char *buf, size_t buf_size);
+
   umodem_result_t umodem_get_signal_quality(int *rssi, int *ber);
-
-  umodem_result_t umodem_attach_network(uint32_t timeout_ms);
-  umodem_result_t umodem_detach_network(void);
-
-  /* ==================== Data Connection (PDP Context) ==================== */
-
-  /**
-   * @brief Activate data connection using the given APN.
-   * Required before using HTTP, MQTT, etc.
-   * @param apn Access Point Name (e.g., "internet", "iot.com")
-   * @return UMODEM_OK on success.
-   */
-  umodem_result_t umodem_data_connect(const char *apn);
-
-  /**
-   * @brief Deactivate data connection.
-   * @return UMODEM_OK on success.
-   */
-  umodem_result_t umodem_data_disconnect(void);
-
-  /**
-   * @brief Check if data connection is active.
-   * @return 1 if connected, 0 if not, negative on error.
-   */
-  int umodem_is_data_connected(void);
-
-  /* ==================== Event Registration ==================== */
 
   /**
    * @brief Register an event callback.
+   *
    * @param cb        Callback function (set to NULL to unregister).
    * @param user_ctx  User-defined pointer passed to callback.
    */
