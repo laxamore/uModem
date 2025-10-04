@@ -17,24 +17,22 @@ static void handle_event(int event)
 {
   switch (event)
   {
-  case UMODEM_EVENT_URC:
-    break;
-  case UMODEM_EVENT_NET_UP:
-    break;
-  case UMODEM_EVENT_NET_DOWN:
-    break;
-  case UMODEM_EVENT_DATA_UP:
-    break;
   case UMODEM_EVENT_DATA_DOWN:
     break;
   case UMODEM_EVENT_SMS_RECEIVED:
+    break;
+  case UMODEM_EVENT_SOCK_CONNECTED:
+    break;
+  case UMODEM_EVENT_SOCK_CLOSED:
+    break;
+  case UMODEM_EVENT_SOCK_DATA_RECEIVED:
     break;
   default:
     break;
   }
 }
 
-umodem_result_t umodem_init(umodem_mode_t mode, umodem_apn_t *apn)
+umodem_result_t umodem_init(umodem_apn_t *apn)
 {
   umodem_result_t result = UMODEM_OK;
 
@@ -114,33 +112,19 @@ void umodem_register_event_callback(umodem_event_cb_t cb, void *user_ctx)
 
 void umodem_poll(void)
 {
-  if (g_umodem_driver->umodem_initialized == 0)
-    return;
+    if (g_umodem_driver->umodem_initialized == 0)
+        return;
 
-  umodem_hal_lock();
+    umodem_hal_lock();
 
-  // Support synchronous HAL implementations
-  uint8_t read_buf[UMODEM_RX_BUF_SIZE / 2];
-  size_t len = 0;
-  if ((len = umodem_hal_read(read_buf, sizeof(read_buf))) > 0)
-    umodem_buffer_push(read_buf, len);
+    // Read new data
+    uint8_t read_buf[UMODEM_RX_BUF_SIZE / 2];
+    size_t len = umodem_hal_read(read_buf, sizeof(read_buf));
+    if (len > 0)
+        umodem_buffer_push(read_buf, len);
 
-  // Process first complete line (if any)
-  int pos = umodem_buffer_find((uint8_t *)"\r\n", 2);
-  if (pos >= 0)
-  {
-    size_t line_len = (size_t)pos + 2;
-    char buf[line_len + 1];
-    umodem_buffer_peek((uint8_t *)buf, line_len);
-    buf[line_len] = '\0';
+    // Process all new URC lines
+    umodem_buffer_process_urcs(g_umodem_driver->handle_urc);
 
-    int event = g_umodem_driver->handle_urc((uint8_t *)buf, line_len);
-    if (event != UMODEM_URC_IGNORE)
-    {
-      umodem_buffer_pop(NULL, line_len);
-      handle_event((umodem_event_t)event);
-    }
-  }
-
-  umodem_hal_unlock();
+    umodem_hal_unlock();
 }

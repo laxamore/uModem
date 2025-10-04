@@ -13,6 +13,7 @@ typedef struct
 } ring_buffer_t;
 
 static ring_buffer_t ring;
+static size_t urc_scan_offset = 0;
 
 void umodem_buffer_init(void)
 {
@@ -42,6 +43,13 @@ size_t umodem_buffer_push(const uint8_t *data, size_t len)
   {
     size_t drop = len - free_space;
     ring.tail = (ring.tail + drop) % UMODEM_RX_BUF_SIZE;
+    ring.count -= drop; // because we're about to add 'len', but net change is len - drop
+
+    // Also adjust urc_scan_offset
+    if (urc_scan_offset > drop)
+      urc_scan_offset -= drop;
+    else
+      urc_scan_offset = 0;
   }
 
   // How much space remains until buffer end
@@ -67,24 +75,34 @@ size_t umodem_buffer_push(const uint8_t *data, size_t len)
 
 int umodem_buffer_pop(uint8_t *dst, size_t len)
 {
-  if (dst == NULL || ring.count < len)
+  if (ring.count < len)
     return -1;
 
   if (ring.tail + len > UMODEM_RX_BUF_SIZE)
   {
     size_t first_part = UMODEM_RX_BUF_SIZE - ring.tail;
     size_t second_part = len - first_part;
-    memcpy(dst, &ring.buf[ring.tail], first_part);
-    memcpy(dst + first_part, ring.buf, second_part);
+    if (dst)
+    {
+      memcpy(dst, &ring.buf[ring.tail], first_part);
+      memcpy(dst + first_part, ring.buf, second_part);
+    }
     ring.tail = second_part;
   }
   else
   {
-    memcpy(dst, &ring.buf[ring.tail], len);
+    if (dst)
+      memcpy(dst, &ring.buf[ring.tail], len);
     ring.tail = (ring.tail + len == UMODEM_RX_BUF_SIZE) ? 0 : ring.tail + len;
   }
 
   ring.count -= len;
+
+  if (urc_scan_offset > len)
+    urc_scan_offset -= len;
+  else
+    urc_scan_offset = 0;
+
   return len;
 }
 
@@ -150,4 +168,38 @@ int umodem_buffer_find_from(const uint8_t *pattern, size_t pattern_len, size_t s
 
   uint8_t *found = memmem(linear_buf, search_len, pattern, pattern_len);
   return found ? (int)(found - linear_buf) + (int)start_offset : -1;
+}
+
+int umodem_buffer_process_urcs(umodem_urc_handler_t handler)
+{
+  if (!handler)
+    return -1;
+
+  int lines_processed = 0;
+  size_t offset = urc_scan_offset;
+
+  while (offset < ring.count)
+  {
+    int pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, offset);
+    if (pos < 0)
+      break;
+
+    size_t line_len = (size_t)(pos - offset) + 2;
+    char buf[line_len + 1];
+
+    if (umodem_buffer_peek_from((uint8_t *)buf, offset, line_len) != (int)line_len)
+      break;
+
+    buf[line_len] = '\0';
+
+    // Call handler
+    int event = handler((uint8_t *)buf, line_len);
+    (void)event; // Let caller decide what to do with event
+
+    lines_processed++;
+    offset = pos + 2;
+  }
+
+  urc_scan_offset = offset;
+  return lines_processed;
 }

@@ -23,12 +23,11 @@ extern "C"
   typedef enum
   {
     UMODEM_NO_EVENT = 0,
-    UMODEM_EVENT_URC = 1,         // Unsolicited Result Code (e.g., +CMTI, +CREG)
-    UMODEM_EVENT_NET_UP = 2,      // Successfully attached to cellular network
-    UMODEM_EVENT_NET_DOWN = 3,    // Detached or lost network registration
-    UMODEM_EVENT_DATA_UP = 4,     // Data connection (PDP context) activated
-    UMODEM_EVENT_DATA_DOWN = 5,   // Data connection deactivated
-    UMODEM_EVENT_SMS_RECEIVED = 6 // New SMS received (if SMS monitoring enabled)
+    UMODEM_EVENT_DATA_DOWN = 1,          // Data connection deactivated
+    UMODEM_EVENT_SMS_RECEIVED = 2,       // New SMS received (if SMS monitoring enabled)
+    UMODEM_EVENT_SOCK_CONNECTED = 3,     // Socket successfully connected
+    UMODEM_EVENT_SOCK_CLOSED = 4,        // Socket closed
+    UMODEM_EVENT_SOCK_DATA_RECEIVED = 5  // Data available to read on socket
   } umodem_event_t;
 
   typedef enum
@@ -60,11 +59,9 @@ extern "C"
    * @brief Initialize the modem library.
    * Must be called once before any other function.
    *
-   * @param mode Mode: SOCK, HTTP, MQTT, or PPP.
-   *
    * @return UMODEM_OK on success.
    */
-  umodem_result_t umodem_init(umodem_mode_t mode, umodem_apn_t *apn);
+  umodem_result_t umodem_init(umodem_apn_t *apn);
 
   /**
    * @brief Deinitialize the modem library and power off modem.

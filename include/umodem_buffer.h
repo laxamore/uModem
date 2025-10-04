@@ -9,6 +9,9 @@ extern "C"
 {
 #endif
 
+  // URC handler function
+  typedef int (*umodem_urc_handler_t)(const uint8_t *line, size_t len);
+
   /**
    * Initialize the internal ring buffer.
    * Must be called once before use.
@@ -65,6 +68,16 @@ extern "C"
    * @return number of bytes read, or -1 on error.
    */
   int umodem_buffer_peek_from(uint8_t *dst, size_t offset, size_t len);
+
+  /**
+   * Process all complete URC lines in the buffer using the provided handler.
+   * Calls the handler for each complete line found, and advance processed urc_scan_offset.
+   * 
+   * @param handler Function to call for each complete URC line.
+   * 
+   * @return Number of URC lines processed.
+   */
+  int umodem_buffer_process_urcs(umodem_urc_handler_t handler);
 
 #ifdef __cplusplus
 }

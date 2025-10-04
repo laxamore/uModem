@@ -24,37 +24,27 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
   uint32_t time_start = umodem_hal_millis();
   while (umodem_hal_millis() - time_start <= timeout_ms)
   {
-    umodem_poll(); // Process URCs (removes known URC lines from buffer)
+    umodem_poll(); // Process URCs
 
     umodem_hal_lock();
 
     int pos = -1;
-    const char *match = NULL;
     size_t match_len = 0;
     int result = -1;
 
     // Success responses
     if ((pos = umodem_buffer_find((uint8_t *)"SEND OK\r\n", 9)) >= 0)
     {
-      match = "SEND OK\r\n";
       match_len = 9;
       result = 0;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"OK\r\n", 4)) >= 0)
     {
-      match = "OK\r\n";
       match_len = 4;
-      result = 0;
-    }
-    else if ((pos = umodem_buffer_find((uint8_t *)"CONNECT\r\n", 9)) >= 0)
-    {
-      match = "CONNECT\r\n";
-      match_len = 9;
       result = 0;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"> ", 2)) >= 0)
     {
-      match = "> ";
       match_len = 2;
       result = 0;
     }
@@ -62,58 +52,29 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     // Error responses
     else if ((pos = umodem_buffer_find((uint8_t *)"ERROR\r\n", 7)) >= 0)
     {
-      match = "ERROR\r\n";
       match_len = 7;
-      result = -1;
-    }
-    else if ((pos = umodem_buffer_find((uint8_t *)"NO CARRIER\r\n", 12)) >= 0)
-    {
-      match = "NO CARRIER\r\n";
-      match_len = 12;
-      result = -1;
-    }
-    else if ((pos = umodem_buffer_find((uint8_t *)"NO DIALTONE\r\n", 13)) >= 0)
-    {
-      match = "NO DIALTONE\r\n";
-      match_len = 13;
-      result = -1;
-    }
-    else if ((pos = umodem_buffer_find((uint8_t *)"NO ANSWER\r\n", 11)) >= 0)
-    {
-      match = "NO ANSWER\r\n";
-      match_len = 11;
-      result = -1;
-    }
-    else if ((pos = umodem_buffer_find((uint8_t *)"BUSY\r\n", 6)) >= 0)
-    {
-      match = "BUSY\r\n";
-      match_len = 6;
       result = -1;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"+CME ERROR:", 11)) >= 0)
     {
-      // +CME ERROR:<err> — find end of line
       int end_pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, pos);
       if (end_pos >= pos + 11)
       {
-        match = "+CME ERROR:";
         match_len = (size_t)(end_pos - pos) + 2; // include \r\n
         result = -1;
       }
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"+CMS ERROR:", 11)) >= 0)
     {
-      // +CMS ERROR:<err>
       int end_pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, pos);
       if (end_pos >= pos + 11)
       {
-        match = "+CMS ERROR:";
         match_len = (size_t)(end_pos - pos) + 2;
         result = -1;
       }
     }
 
-    if (match != NULL)
+    if (match_len > 0)
     {
       size_t total_len = (size_t)pos;
       char buf[total_len + match_len + 1];
@@ -121,27 +82,44 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
       umodem_buffer_pop(buf, total_len + match_len);
       buf[total_len] = '\0';
 
-      char *start = strstr(buf, "\r\n");
-      if (!start)
+      if (response && resp_len > 0)
       {
-        umodem_hal_unlock();
-        return -1;
-      }
+        char *payload_start = buf;
+        char *payload_end = buf + total_len; // points to start of "OK\r\n"
 
-      start += 2;
+        // Skip leading whitespace and empty lines
+        while (payload_start < payload_end && (*payload_start == '\r' || *payload_start == '\n'))
+          payload_start++;
 
-      if (total_len - (start - buf) < 0)
-      {
-        umodem_hal_unlock();
-        return -1;
-      }
+        // Trim trailing \r\n from payload_end
+        uint8_t max_trim = 4; // max 2 trailing \r\n pairs
+        while (payload_end > payload_start && max_trim > 0 &&
+               (*(payload_end - 1) == '\r' || *(payload_end - 1) == '\n'))
+        {
+          payload_end--;
+          max_trim--;
+        }
 
-      if (response != NULL && resp_len > 0)
-      {
-        char *end = strstr(start, "\r\n");
-        size_t copy_len = (end - start < resp_len) ? end - start + 1 : resp_len;
-        strncpy(response, start, copy_len);
-        response[copy_len - 1] = '\0';
+        // Find last occurrence of "\r\n\r\n" before payload_end
+        char *last_empty_line = NULL;
+        char *search = payload_start;
+        while (search < payload_end - 3)
+        {
+          if (memcmp(search, "\r\n\r\n", 4) == 0)
+            last_empty_line = search;
+          search++;
+        }
+
+        if (last_empty_line && last_empty_line + 4 <= payload_end)
+          payload_start = last_empty_line + 4;
+
+        size_t payload_len = (size_t)(payload_end - payload_start);
+        if (payload_len >= resp_len)
+          payload_len = resp_len - 1;
+
+        if (payload_len > 0)
+          memcpy(response, payload_start, payload_len);
+        response[payload_len] = '\0';
       }
 
       umodem_hal_unlock();
