@@ -60,7 +60,7 @@ static umodem_result_t quectel_m65_get_imei(char *buf, size_t buf_size)
   return umodem_at_send("AT+CGSN\r", buf, buf_size, 5000);
 }
 
-static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
+static umodem_event_info_t quectel_m65_handle_urc(const uint8_t *buf, size_t len)
 {
   char dup_buf[len + 1];
   strncpy(dup_buf, buf, len);
@@ -69,13 +69,13 @@ static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
   if (strstr(buf, "+PDP DEACT"))
   {
     g_data_connected = 0;
-    return UMODEM_EVENT_DATA_DOWN;
+    return (umodem_event_info_t){ .event = UMODEM_EVENT_DATA_DOWN, .event_data = NULL };
   }
   else if (strstr(buf, "+CREG:"))
   {
     // If buf containing ',' then it's not URC +CREG: <stat>
     if (strchr(dup_buf, ','))
-      return UMODEM_URC_IGNORE;
+      return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
 
     // +CREG: <stat>
     char *token = strtok(dup_buf, ":");
@@ -89,10 +89,10 @@ static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
       else
         g_network_attached = 0;
     }
-    return UMODEM_NO_EVENT;
+    return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
   }
   else if (strstr(buf, "+CMTI:"))
-    return UMODEM_EVENT_SMS_RECEIVED; /* SMS received */
+    return (umodem_event_info_t){ .event = UMODEM_EVENT_SMS_RECEIVED, .event_data = NULL }; /* SMS received */
   else if (strstr(buf, "CONNECT OK"))
   {
     // <index>, CONNECT OK
@@ -103,10 +103,10 @@ static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
       if (index >= 0 && index < QUECTEL_M65_MAX_SOCKETS)
       {
         g_sockets[index].connected = 1; // Mark socket as connected
-        return UMODEM_EVENT_SOCK_CONNECTED;
+        return (umodem_event_info_t){ .event = UMODEM_EVENT_SOCK_CONNECTED, .event_data = &g_sockets[index].sockfd };
       }
     }
-    return UMODEM_NO_EVENT;
+    return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
   }
   else if (strstr(buf, "CONNECT FAIL"))
   {
@@ -118,7 +118,7 @@ static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
       if (index >= 0 && index < QUECTEL_M65_MAX_SOCKETS)
         g_sockets[index].connected = -1; // Mark socket as failed
     }
-    return UMODEM_NO_EVENT;
+    return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
   }
   else if (strstr(buf, "CLOSED"))
   {
@@ -131,15 +131,31 @@ static int quectel_m65_handle_urc(const uint8_t *buf, size_t len)
       {
         g_sockets[index].connected = 0;
         g_sockets[index].sockfd = 0;
-        return UMODEM_EVENT_SOCK_CLOSED;
+        return (umodem_event_info_t){ .event = UMODEM_EVENT_SOCK_CLOSED, .event_data = &g_sockets[index].sockfd };
       }
     }
-    return UMODEM_NO_EVENT;
+    return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
   }
   else if (strstr(buf, "+QIRDI:"))
-    return UMODEM_EVENT_SOCK_DATA_RECEIVED;
+  {
+    // +QIRDI: 0,1,<index>
+    char *token = strtok(dup_buf, ":");
+    if (token)
+      token = strtok(NULL, ",");  // skip 0
+    if (token)
+      token = strtok(NULL, ",");  // skip 1
+    if (token)
+      token = strtok(NULL, "\r"); // get <index>
+    if (token)
+    {
+      int index = atoi(token);
+      if (index >= 0 && index < QUECTEL_M65_MAX_SOCKETS)
+        return (umodem_event_info_t){ .event = UMODEM_EVENT_SOCK_DATA_RECEIVED, .event_data = &g_sockets[index].sockfd };
+    }
+    return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
+  }
 
-  return UMODEM_URC_IGNORE;
+  return (umodem_event_info_t){ .event = UMODEM_URC_IGNORE, .event_data = NULL };
 }
 
 static umodem_result_t quectel_m65_init()
@@ -397,14 +413,88 @@ static umodem_result_t quectel_m65_sock_close(int sockfd)
   return result;
 }
 
+static int quectel_m65_sock_send(int sockfd, const uint8_t *data, size_t len)
+{
+  if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS || !data || len == 0)
+    return -1;
+
+  quectel_m65_sockfd *sock = &g_sockets[sockfd - 1];
+  if (sock->sockfd != sockfd || !sock->connected)
+    return -1;
+
+  char cmd[40];
+  snprintf(cmd, sizeof(cmd), "AT+QISEND=%d,%zu\r", sockfd - 1, len);
+
+  // Send command
+  if (umodem_at_send(cmd, NULL, 0, 5000) != UMODEM_OK)
+    return -1;
+
+  if (umodem_at_send((const char *)data, NULL, 0, 10000) == UMODEM_OK)
+    return len;
+
+  return -1; // timeout or fail
+}
+
+static int quectel_m65_sock_recv(int sockfd, uint8_t *buf, size_t len)
+{
+  if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS || !buf || len == 0)
+    return -1;
+
+  quectel_m65_sockfd *sock = &g_sockets[sockfd - 1];
+  if (sock->sockfd != sockfd || !sock->connected)
+    return -1;
+
+  // Cap max read to avoid huge allocations
+  const size_t MAX_RECV = 1500; // typical MTU
+  size_t read_len = (len > MAX_RECV) ? MAX_RECV : len;
+
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+QIRD=0,1,%d,%zu\r", sockfd - 1, read_len);
+
+  // Allocate response buffer on heap
+  char *response = (char *)malloc(UMODEM_RX_BUF_SIZE);
+  if (!response)
+    return -1; // out of memory
+
+  int result = -1;
+  if (umodem_at_send(cmd, response, UMODEM_RX_BUF_SIZE, 5000) == UMODEM_OK)
+  {
+    int data_len = 0;
+    if (sscanf(response, "+QIRD: %*[^,],%*[^,],%d", &data_len) == 1 && data_len > 0)
+    {
+      char *data_start = strstr(response, "\r\n");
+      if (data_start)
+      {
+        data_start += 2;
+        if (data_len > 0)
+        {
+          size_t copy_len = (size_t)data_len;
+          if (copy_len > len)
+            copy_len = len;
+
+          memcpy(buf, data_start, copy_len);
+          result = (int)copy_len;
+        }
+        else
+          result = 0; // no data
+      }
+    }
+    else
+      result = 0;
+  }
+
+  free(response);
+  return result;
+}
+
 static umodem_sock_driver_t quectel_m65_sock_driver = {
     .sock_init = quectel_m65_sock_init,
     .sock_deinit = quectel_m65_sock_deinit,
     .sock_create = quectel_m65_sock_create,
     .sock_connect = quectel_m65_sock_connect,
     .sock_close = quectel_m65_sock_close,
-    .sock_send = NULL,
-    .sock_recv = NULL,
+    .sock_send = quectel_m65_sock_send,
+    .sock_recv = quectel_m65_sock_recv,
 };
 
 static umodem_driver_t s_quectel_m65_driver = {

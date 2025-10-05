@@ -10,17 +10,19 @@ typedef struct
   size_t head;
   size_t tail;
   size_t count;
+  size_t *urc_scan_offset;
 } ring_buffer_t;
 
 static ring_buffer_t ring;
-static size_t urc_scan_offset = 0;
 
-void umodem_buffer_init(void)
+void umodem_buffer_init(size_t *urc_scan_offset)
 {
   ring.head = 0;
   ring.tail = 0;
   ring.count = 0;
   memset(ring.buf, 0, sizeof(ring.buf));
+  ring.urc_scan_offset = urc_scan_offset;
+  *ring.urc_scan_offset = 0;
 }
 
 size_t umodem_buffer_push(const uint8_t *data, size_t len)
@@ -46,10 +48,13 @@ size_t umodem_buffer_push(const uint8_t *data, size_t len)
     ring.count -= drop; // because we're about to add 'len', but net change is len - drop
 
     // Also adjust urc_scan_offset
-    if (urc_scan_offset > drop)
-      urc_scan_offset -= drop;
-    else
-      urc_scan_offset = 0;
+    if (ring.urc_scan_offset)
+    {
+      if (*ring.urc_scan_offset > drop)
+        *ring.urc_scan_offset -= drop;
+      else
+        *ring.urc_scan_offset = 0;
+    }
   }
 
   // How much space remains until buffer end
@@ -98,10 +103,13 @@ int umodem_buffer_pop(uint8_t *dst, size_t len)
 
   ring.count -= len;
 
-  if (urc_scan_offset > len)
-    urc_scan_offset -= len;
-  else
-    urc_scan_offset = 0;
+  if (ring.urc_scan_offset)
+  {
+    if (*ring.urc_scan_offset > len)
+      *ring.urc_scan_offset -= len;
+    else
+      *ring.urc_scan_offset = 0;
+  }
 
   return len;
 }
@@ -170,36 +178,7 @@ int umodem_buffer_find_from(const uint8_t *pattern, size_t pattern_len, size_t s
   return found ? (int)(found - linear_buf) + (int)start_offset : -1;
 }
 
-int umodem_buffer_process_urcs(umodem_urc_handler_t handler)
+size_t umodem_buffer_get_count(void)
 {
-  if (!handler)
-    return -1;
-
-  int lines_processed = 0;
-  size_t offset = urc_scan_offset;
-
-  while (offset < ring.count)
-  {
-    int pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, offset);
-    if (pos < 0)
-      break;
-
-    size_t line_len = (size_t)(pos - offset) + 2;
-    char buf[line_len + 1];
-
-    if (umodem_buffer_peek_from((uint8_t *)buf, offset, line_len) != (int)line_len)
-      break;
-
-    buf[line_len] = '\0';
-
-    // Call handler
-    int event = handler((uint8_t *)buf, line_len);
-    (void)event; // Let caller decide what to do with event
-
-    lines_processed++;
-    offset = pos + 2;
-  }
-
-  urc_scan_offset = offset;
-  return lines_processed;
+  return ring.count;
 }

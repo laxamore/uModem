@@ -7,7 +7,6 @@
 
 void umodem_at_init()
 {
-  umodem_buffer_init();
   umodem_hal_init();
 }
 
@@ -33,25 +32,29 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     int result = -1;
 
     // Success responses
-    if ((pos = umodem_buffer_find((uint8_t *)"SEND OK\r\n", 9)) >= 0)
+    if ((pos = umodem_buffer_find((uint8_t *)"\r\nSEND OK\r\n", 11)) >= 0)
     {
+      pos += 2;
       match_len = 9;
       result = 0;
     }
-    else if ((pos = umodem_buffer_find((uint8_t *)"OK\r\n", 4)) >= 0)
+    else if ((pos = umodem_buffer_find((uint8_t *)"\r\nOK\r\n", 6)) >= 0)
     {
+      pos += 2;
       match_len = 4;
       result = 0;
     }
-    else if ((pos = umodem_buffer_find((uint8_t *)"> ", 2)) >= 0)
+    else if ((pos = umodem_buffer_find((uint8_t *)"\r\n> ", 4)) >= 0)
     {
+      pos += 2;
       match_len = 2;
       result = 0;
     }
 
     // Error responses
-    else if ((pos = umodem_buffer_find((uint8_t *)"ERROR\r\n", 7)) >= 0)
+    else if ((pos = umodem_buffer_find((uint8_t *)"\r\nERROR\r\n", 9)) >= 0)
     {
+      pos += 2;
       match_len = 7;
       result = -1;
     }

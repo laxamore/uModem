@@ -1,8 +1,40 @@
 #include <signal.h>
 #include <stdio.h>
+#include <cstring>
 
 #include "umodem.h"
 #include "umodem_sock.h"
+
+static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
+{
+  switch (event_info->event)
+  {
+  case UMODEM_EVENT_SOCK_CONNECTED:
+    printf("Socket connected! on fd %d\n", *(int *)event_info->event_data);
+    break;
+  case UMODEM_EVENT_SOCK_DATA_RECEIVED:
+  {
+    printf("Socket data received on fd %d\n", *(int *)event_info->event_data);
+
+    // Read data
+    char buf[128];
+    int len = umodem_sock_recv(*(int *)event_info->event_data, buf, sizeof(buf) - 1);
+    if (len > 0)
+    {
+      buf[len] = '\0';
+      printf("Received data (%d bytes): %s\n", len, buf);
+    }
+    else  
+      printf("Receive error or no data\n");
+    break;
+  }
+  case UMODEM_EVENT_SOCK_CLOSED:
+    printf("Socket closed\n");
+    break;
+  default:
+    break;
+  }
+}
 
 static void sig_handler(int signo)
 {
@@ -48,6 +80,8 @@ int main()
 
   printf("uModem Initialized\n");
 
+  umodem_register_event_callback(on_umodem_event, NULL);
+
   char imei[32];
   if (umodem_get_imei(imei, sizeof(imei)) == UMODEM_OK)
     printf("IMEI: %s\n", imei);
@@ -62,29 +96,53 @@ int main()
   if (umodem_get_iccid(iccid, sizeof(iccid)) == UMODEM_OK)
     printf("ICCID: %s\n", iccid);
 
+  int sockfd = -1;
+  const char host[] = "tcpbin.com";
+  uint16_t port = 4242;
+
   if (umodem_sock_init() != UMODEM_OK)
-    printf("Failed to initialize socket interface\n");
-
-  int sockfd = umodem_sock_create(UMODEM_SOCK_TCP);
-  if (sockfd < 0)
-    printf("Failed to create socket\n");
-  else
   {
-    printf("Socket created with fd: %d\n", sockfd);
-    const char host[] = "tcpbin.com";
-    uint16_t port = 4242;
-    if (umodem_sock_connect(sockfd, host, sizeof(host) - 1, port, 10000) == UMODEM_OK)
-      printf("Socket connected to %s:%d\n", host, port);
-    else
-      printf("Failed to connect socket\n");
-
-    // Close socket
-    if (umodem_sock_close(sockfd) == UMODEM_OK)
-      printf("Socket closed\n");
-    else
-      printf("Failed to close socket\n");
+    printf("Failed to initialize socket\n");
+    goto cleanup;
   }
 
+  sockfd = umodem_sock_create(UMODEM_SOCK_TCP);
+  if (sockfd < 0)
+  {
+    printf("Failed to create socket\n");
+    goto cleanup;
+  }
+
+  printf("Socket created with fd: %d\n", sockfd);
+
+  if (umodem_sock_connect(sockfd, host, sizeof(host) - 1, port, 10000) == UMODEM_OK)
+  {
+    // Send data
+    const char *msg = "Hello from uModem!\n";
+    if (umodem_sock_send(sockfd, (uint8_t *)msg, strlen(msg)) > 0)
+    {
+      printf("Data sent\n");
+
+      // Wait for response (event-driven)
+      uint32_t start = 0;
+      while (start < 500)
+      {
+        umodem_poll();
+        usleep(10000); // 10ms
+        start += 1;
+      }
+    }
+    else
+      printf("Send failed\n");
+  }
+  else
+    printf("Connect command failed\n");
+
+close_sock:
+  umodem_sock_close(sockfd);
+  printf("Socket closed\n");
+
+cleanup:
   umodem_sock_deinit();
   umodem_deinit();
   umodem_power_off();

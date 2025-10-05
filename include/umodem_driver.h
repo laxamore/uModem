@@ -18,7 +18,7 @@ extern "C"
     umodem_result_t (*sock_connect)(int sockfd, const char *host, size_t host_len, uint16_t port, uint32_t timeout_ms);
     umodem_result_t (*sock_close)(int sockfd);
     int (*sock_send)(int sockfd, const uint8_t *data, size_t len);
-    int (*sock_recv)(int sockfd, uint8_t *buf, size_t buf_size);
+    int (*sock_recv)(int sockfd, uint8_t *buf, size_t len);
   } umodem_sock_driver_t;
 
   typedef struct
@@ -44,7 +44,7 @@ extern "C"
     umodem_result_t (*get_iccid)(char *buf, size_t buf_size);
     umodem_result_t (*get_signal)(int *rssi, int *ber);
 
-    int (*handle_urc)(const uint8_t *buf, size_t len);
+    umodem_event_info_t (*handle_urc)(const uint8_t *buf, size_t len);
 
     const umodem_sock_driver_t *sock_driver;
     const umodem_http_driver_t *http_driver;
