@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -51,6 +52,9 @@ umodem_result_t umodem_init(umodem_apn_t *apn)
 
   umodem_buffer_init(&urc_scan_offset);
   umodem_at_init();
+
+  umodem_hal_send("\r\n\r\n", 4);
+  umodem_hal_delay_ms(100);
 
   result = g_umodem_driver->init();
   if (result == UMODEM_OK)
@@ -145,6 +149,7 @@ static int umodem_buffer_process_urcs(umodem_urc_handler_t handler)
 
     lines_processed++;
     offset = pos + 2;
+    umodem_hal_delay_ms(10);
   }
 
   urc_scan_offset = offset;
@@ -159,10 +164,17 @@ void umodem_poll(void)
   umodem_hal_lock();
 
   // Read new data
-  uint8_t read_buf[UMODEM_RX_BUF_SIZE / 2];
+  uint8_t *read_buf = calloc(UMODEM_RX_BUF_SIZE / 2, 1);
+  if (!read_buf)
+  {
+    umodem_hal_unlock();
+    return;
+  }
+
   size_t len = umodem_hal_read(read_buf, sizeof(read_buf));
   if (len > 0)
     umodem_buffer_push(read_buf, len);
+  free(read_buf);
 
   // Process all new URC lines
   umodem_buffer_process_urcs(g_umodem_driver->handle_urc);

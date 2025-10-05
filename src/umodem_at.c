@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 
 #include "umodem.h"
 #include "umodem_hal.h"
@@ -80,7 +81,12 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     if (match_len > 0)
     {
       size_t total_len = (size_t)pos;
-      char buf[total_len + match_len + 1];
+      char *buf = (char *)calloc(total_len + match_len + 1, 1);
+      if (!buf)
+      {
+        umodem_hal_unlock();
+        return -1; // out of memory
+      }
 
       umodem_buffer_pop(buf, total_len + match_len);
       buf[total_len] = '\0';
@@ -126,6 +132,7 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
       }
 
       umodem_hal_unlock();
+      free(buf);
       return result;
     }
 
