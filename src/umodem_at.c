@@ -81,7 +81,7 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     if (match_len > 0)
     {
       size_t total_len = (size_t)pos;
-      char *buf = (char *)calloc(total_len + match_len + 1, 1);
+      uint8_t *buf = (uint8_t *)calloc(total_len + match_len + 1, 1);
       if (!buf)
       {
         umodem_hal_unlock();
@@ -93,8 +93,8 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
 
       if (response && resp_len > 0)
       {
-        char *payload_start = buf;
-        char *payload_end = buf + total_len; // points to start of "OK\r\n"
+        uint8_t *payload_start = buf;
+        uint8_t *payload_end = buf + total_len; // points to start of "OK\r\n"
 
         // Skip leading whitespace and empty lines
         while (payload_start < payload_end && (*payload_start == '\r' || *payload_start == '\n'))
@@ -110,11 +110,11 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
         }
 
         // Find last occurrence of "\r\n\r\n" before payload_end
-        char *last_empty_line = NULL;
-        char *search = payload_start;
+        uint8_t *last_empty_line = NULL;
+        uint8_t *search = payload_start;
         while (search < payload_end - 3)
         {
-          if (memcmp(search, "\r\n\r\n", 4) == 0)
+          if (memcmp(search, (const uint8_t*)"\r\n\r\n", 4) == 0)
             last_empty_line = search;
           search++;
         }

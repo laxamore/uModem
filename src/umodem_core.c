@@ -24,7 +24,7 @@ static size_t g_event_queue_len = 0;
 
 static void queue_event(umodem_event_info_t event)
 {
-  if (g_event_queue_len < MAX_QUEUED_EVENTS && event.event != UMODEM_NO_EVENT && event.event != UMODEM_URC_IGNORE)
+  if (g_event_queue_len < MAX_QUEUED_EVENTS && event.event != UMODEM_NO_EVENT && event.event > 0)
     g_event_queue[g_event_queue_len++] = event;
 }
 
@@ -53,7 +53,7 @@ umodem_result_t umodem_init(umodem_apn_t *apn)
   umodem_buffer_init(&urc_scan_offset);
   umodem_at_init();
 
-  umodem_hal_send("\r\n\r\n", 4);
+  umodem_hal_send((const uint8_t*)"\r\n\r\n", 4);
   umodem_hal_delay_ms(100);
 
   result = g_umodem_driver->init();
