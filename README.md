@@ -65,3 +65,4 @@ For example, see [`examples/socket/posix/posix_hal.cpp`](examples/socket/posix/p
 - [ ] HTTP/HTTPS client driver
 - [ ] MQTT driver
 - [ ] PPP dial-up mode
+- [ ] CoAP

@@ -1,13 +1,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <errno.h>
 
 #include "umodem_config.h"
 #include "umodem_driver.h"
-#include "umodem_sock.h"
 #include "umodem_hal.h"
 #include "umodem_at.h"
+
+#include "umodem_mqtt.h"
+#include "umodem_sock.h"
 
 #if defined(UMODEM_MODEM_QUECTEL_M65)
 
@@ -15,6 +16,10 @@
 #define QIACT_TIMEOUT_MS (1000 * 150)         // 150 seconds
 #define QIDEACT_TIMEOUT_MS (1000 * 40)        // 40 seconds
 #define NETWORK_ATTACH_TIMEOUT_MS (1000 * 90) // 90 seconds
+//
+#define QMTCFG_TIMEOUT_MS (1000 * 5)   // 5 seconds
+#define QMTOPEN_TIMEOUT_MS (1000 * 75) // 5 seconds
+#define QMTCONN_TIMEOUT_MS (1000 * 60) // 5 seconds
 
 #define QUECTEL_M65_MAX_SOCKETS 6
 
@@ -22,6 +27,7 @@ typedef struct
 {
   int sockfd;
   umodem_sock_type_t type;
+  int connection_opened; // used in mqtt
   int connected;
 } quectel_m65_sockfd;
 
@@ -35,7 +41,8 @@ static int g_network_attached = 0;
 static umodem_result_t check_sim_status(void)
 {
   char response[64];
-  if (umodem_at_send("AT+CPIN?\r", response, sizeof(response), 2000) != UMODEM_OK)
+  if (umodem_at_send("AT+CPIN?\r", response, sizeof(response), 2000) !=
+      UMODEM_OK)
     return UMODEM_ERR;
 
   if (strstr(response, "READY"))
@@ -154,6 +161,69 @@ static umodem_event_info_t quectel_m65_handle_urc(const uint8_t *buf, size_t len
     }
     return (umodem_event_info_t){.event = UMODEM_URC_IGNORE, .event_data = NULL};
   }
+  else if (strstr((const char *)buf, "+QMTOPEN:"))
+  {
+    // +QMTOPEN: <index>,result
+    char *token = strtok(dup_buf, ":");
+    if (token)
+      token = strtok(NULL, ","); // index token
+    if (token)
+    {
+      int index = atoi(token);
+      if (index >= 0 && index < QUECTEL_M65_MAX_SOCKETS)
+      {
+        token = strtok(NULL, ","); // result token
+        if (token)
+        {
+          int result = atoi(token);
+          if (result == 0)
+            g_sockets[index].connection_opened = 1;
+        }
+      }
+    }
+    return (umodem_event_info_t){.event = UMODEM_URC_IGNORE, .event_data = NULL};
+  }
+  else if (strstr((const char *)buf, "+QMTCONN:"))
+  {
+    // +QMTCONN: <index>,<result>,<retcode>
+    char *token = strtok(dup_buf, ":");
+    if (token)
+      token = strtok(NULL, ","); // index token
+    if (token)
+    {
+      int index = atoi(token);
+      if (index >= 0 && index < QUECTEL_M65_MAX_SOCKETS)
+      {
+        token = strtok(NULL, ","); // result token
+        if (token)
+        {
+          int result = atoi(token);
+          if (result == 0)
+          {
+            token = strtok(NULL, ","); // result token
+            if (token)
+            {
+              int retcode = atoi(token);
+              if (retcode == 0)
+              {
+                g_sockets[index].connected = 1;
+                return (umodem_event_info_t){
+                    .event = UMODEM_EVENT_SOCK_CONNECTED,
+                    .event_data = &g_sockets[index].sockfd};
+              }
+            }
+          }
+        }
+      }
+    }
+    return (umodem_event_info_t){.event = UMODEM_URC_IGNORE, .event_data = NULL};
+  }
+  else if (strstr((const char *)buf, "+QMTPUB:"))
+  {
+    // +QMTPUB: <index>,<msg_id>,<result>
+    char *token = strtok(dup_buf, ":");
+    return (umodem_event_info_t){.event = UMODEM_URC_IGNORE, .event_data = NULL};
+  }
 
   return (umodem_event_info_t){.event = UMODEM_URC_IGNORE, .event_data = NULL};
 }
@@ -251,6 +321,8 @@ static umodem_result_t quectel_m65_get_signal(int *rssi, int *ber)
     *ber = atoi(token);
   return UMODEM_OK;
 }
+
+// {{ Quectel M65 Sock Driver
 
 static umodem_result_t quectel_m65_sock_init()
 {
@@ -517,6 +589,220 @@ static umodem_sock_driver_t quectel_m65_sock_driver = {
     .sock_recv = quectel_m65_sock_recv,
 };
 
+// End Quectel M65 Sock Driver }}
+
+// {{ Quectel M65 MQTT Driver
+
+static int g_mqtt_initialized = 0;
+
+umodem_result_t quectel_m65_mqtt_init(void)
+{
+  if (!g_sim_inserted)
+    return UMODEM_SIM_NOT_INSERTED;
+
+  uint32_t start = umodem_hal_millis();
+  while (umodem_hal_millis() - start < NETWORK_ATTACH_TIMEOUT_MS &&
+         !g_network_attached)
+  {
+    umodem_poll();
+    umodem_hal_delay_ms(1000);
+  }
+
+  if (!g_network_attached)
+    return UMODEM_ERR;
+
+  // Doesn't need to initialize anything all PDP context handled by QMTOPEN
+
+  g_mqtt_initialized = 1;
+  return UMODEM_OK;
+}
+
+static umodem_result_t quectel_m65_mqtt_deinit()
+{
+  if (!g_sim_inserted)
+    return UMODEM_SIM_NOT_INSERTED;
+
+  g_mqtt_initialized = 0;
+  return UMODEM_OK;
+}
+
+static int quectel_m65_mqtt_connect(const char *host, uint16_t port,
+                                    const umodem_mqtt_connect_opts_t *opts)
+{
+  if (!g_mqtt_initialized)
+    return -1;
+
+  if (!opts->client_id)
+    return -1;
+
+  int connection_index = -1;
+  for (int i = 0; i < QUECTEL_M65_MAX_SOCKETS; i++)
+  {
+    if (g_sockets[i].sockfd == 0)
+    {
+      g_sockets[i].sockfd = i + 1;
+      g_sockets[i].type = UMODEM_SOCK_TCP;
+      connection_index = i;
+      break;
+    }
+  }
+
+  int cmd_size = 256;
+  char *cmd = (char *)calloc(cmd_size, 1);
+  if (cmd == NULL)
+    return -1;
+
+  if (opts->will)
+  {
+    if (!opts->will->topic || !opts->will->message ||
+        strlen(opts->will->topic) == 0 || strlen(opts->will->message) == 0 ||
+        (opts->will->retain != 0 && opts->will->retain != 1) ||
+        (opts->will->qos < UMODEM_MQTT_QOS_0 &&
+         opts->will->qos > UMODEM_MQTT_QOS_2))
+      return -1;
+
+    snprintf(cmd, cmd_size, "AT+QMTCFG=\"WILL\",%d,1,%d,%d,\"%s\",\"%s\"\r",
+             connection_index, opts->will->qos, opts->will->retain,
+             opts->will->topic, opts->will->message);
+    if (umodem_at_send(cmd, NULL, 0, QMTCFG_TIMEOUT_MS) != UMODEM_OK)
+    {
+      free(cmd);
+      return -1;
+    }
+  }
+
+  snprintf(cmd, cmd_size, "AT+QMTCFG=\"TIMEOUT\",%d,%d,0\r", connection_index,
+           opts->delivery_timeout_in_seconds);
+  if (umodem_at_send(cmd, NULL, 0, QMTCFG_TIMEOUT_MS) != UMODEM_OK)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  snprintf(cmd, cmd_size, "AT+QMTCFG=\"SESSION\",%d,%d\r", connection_index,
+           opts->disable_clean_session ? 0 : 1);
+  if (umodem_at_send(cmd, NULL, 0, QMTCFG_TIMEOUT_MS) != UMODEM_OK)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  if (opts->keepalive > 3600)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  snprintf(cmd, cmd_size, "AT+QMTCFG=\"KEEPALIVE\",%d,%d\r", connection_index,
+           opts->keepalive);
+  if (umodem_at_send(cmd, NULL, 0, QMTCFG_TIMEOUT_MS) != UMODEM_OK)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  // TODO : MQTT SSL
+
+  snprintf(cmd, cmd_size, "AT+QMTOPEN=%d,\"%s\",%d\r", connection_index, host,
+           port);
+  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  // Wait QMTOPEN result
+  uint32_t start = umodem_hal_millis();
+  while (umodem_hal_millis() - start < QMTOPEN_TIMEOUT_MS &&
+         !g_sockets[connection_index].connection_opened)
+  {
+    umodem_poll();
+    umodem_hal_delay_ms(1000);
+  }
+
+  snprintf(cmd, cmd_size, "AT+QMTCONN=%d,\"%s\",\"%s\",\"%s\"\r",
+           connection_index, opts->client_id,
+           !opts->username ? "" : opts->username,
+           !opts->password ? "" : opts->password);
+  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK)
+  {
+    free(cmd);
+    return -1;
+  }
+
+  // Wait QMTCONN result
+  start = umodem_hal_millis();
+  while (umodem_hal_millis() - start < QMTCONN_TIMEOUT_MS &&
+         !g_sockets[connection_index].connected)
+  {
+    umodem_poll();
+    umodem_hal_delay_ms(1000);
+  }
+
+  free(cmd);
+  return connection_index + 1;
+}
+
+static umodem_result_t quectel_m65_mqtt_disconnect(int sockfd)
+{
+  if (!g_mqtt_initialized || sockfd <= 0 || sockfd > 6 ||
+      !g_sockets[sockfd - 1].connected)
+    return UMODEM_ERR;
+
+  char cmd[16];
+  snprintf(cmd, sizeof(cmd), "AT+QMTDISC=%d\r", sockfd - 1);
+  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK)
+    return UMODEM_ERR;
+
+  g_sockets[sockfd - 1].connected = 0;
+  return UMODEM_OK;
+}
+
+static umodem_result_t quectel_m65_mqtt_publish(int sockfd, const char *topic,
+                                                const void *payload, size_t len,
+                                                umodem_mqtt_qos_t qos,
+                                                int retain)
+{
+  if (!g_mqtt_initialized || sockfd <= 0 || sockfd > 6 ||
+      !g_sockets[sockfd - 1].connected || !topic || !payload || len <= 0)
+    return UMODEM_ERR;
+
+  int cmd_size = 128;
+  char *cmd = (char *)calloc(cmd_size, 1);
+  if (!cmd)
+    return UMODEM_ERR;
+
+  snprintf(cmd, cmd_size, "AT+QMTPUB=%d,1,%d,%d,\"%s\"\r", sockfd - 1, qos,
+           retain, topic);
+  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK)
+  {
+    free(cmd);
+    return UMODEM_ERR;
+  }
+
+  if (umodem_hal_send(payload, len) > 0)
+  {
+    char ctrl_z[2] = {0x1a, 0x0};
+    free(cmd);
+    return umodem_at_send(ctrl_z, NULL, 0, 1000);
+  }
+
+  free(cmd);
+  return UMODEM_ERR;
+}
+
+static umodem_mqtt_driver_t quectel_m65_mqtt_driver = {
+    .mqtt_init = quectel_m65_mqtt_init,
+    .mqtt_deinit = quectel_m65_mqtt_deinit,
+    .mqtt_connect = quectel_m65_mqtt_connect,
+    .mqtt_disconnect = quectel_m65_mqtt_disconnect,
+    .mqtt_publish = quectel_m65_mqtt_publish,
+    .mqtt_subscribe = NULL,
+    .mqtt_unsubscribe = NULL,
+};
+
+// End Quectel M65 MQTT Driver }}
+
 static umodem_driver_t s_quectel_m65_driver = {
     .init = quectel_m65_init,
     .deinit = quectel_m65_deinit,
@@ -526,7 +812,7 @@ static umodem_driver_t s_quectel_m65_driver = {
     .handle_urc = quectel_m65_handle_urc,
     .sock_driver = &quectel_m65_sock_driver,
     .http_driver = NULL,
-    .mqtt_driver = NULL,
+    .mqtt_driver = &quectel_m65_mqtt_driver,
     .ppp_driver = NULL,
     .umodem_initialized = 0,
 };

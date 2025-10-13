@@ -2,6 +2,7 @@
 #define uMODEM_DRIVER_H_
 
 #include "umodem.h"
+#include "umodem_mqtt.h"
 #include "umodem_sock.h"
 
 #ifdef __cplusplus
@@ -27,6 +28,19 @@ extern "C"
 
   typedef struct
   {
+
+    umodem_result_t (*mqtt_init)(void);
+    umodem_result_t (*mqtt_deinit)(void);
+
+    int (*mqtt_connect)(const char *host, uint16_t port,
+                        const umodem_mqtt_connect_opts_t *opts);
+    umodem_result_t (*mqtt_disconnect)(int sockfd);
+    umodem_result_t (*mqtt_subscribe)(int sockfd, const char *topic,
+                                      umodem_mqtt_qos_t qos);
+    umodem_result_t (*mqtt_unsubscribe)(int sockfd, const char *topic);
+    umodem_result_t (*mqtt_publish)(int sockfd, const char *topic,
+                                    const void *payload, size_t len,
+                                    umodem_mqtt_qos_t qos, int retain);
   } umodem_mqtt_driver_t;
 
   typedef struct
