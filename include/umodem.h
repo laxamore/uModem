@@ -17,17 +17,18 @@ extern "C"
     UMODEM_TIMEOUT = -2,          // Operation timed out
     UMODEM_PARAM = -3,            // Invalid parameter
     UMODEM_SIM_NOT_INSERTED = -4, // Sim not inserted
-    UMODEM_URC_IGNORE = -5        // Ignore result
   } umodem_result_t;
 
   typedef enum
   {
     UMODEM_NO_EVENT = 0,
-    UMODEM_EVENT_DATA_DOWN = 1,         // Data connection deactivated
-    UMODEM_EVENT_SMS_RECEIVED = 2,      // New SMS received (if SMS monitoring enabled)
-    UMODEM_EVENT_SOCK_CONNECTED = 3,    // Socket successfully connected
-    UMODEM_EVENT_SOCK_CLOSED = 4,       // Socket closed
-    UMODEM_EVENT_SOCK_DATA_RECEIVED = 5 // Data available to read on socket
+    UMODEM_EVENT_DATA_DOWN = 1,           // Data connection deactivated
+    UMODEM_EVENT_SMS_RECEIVED = 2,        // New SMS received (if SMS monitoring enabled)
+    UMODEM_EVENT_SOCK_CONNECTED = 3,      // Socket successfully connected
+    UMODEM_EVENT_SOCK_CLOSED = 4,         // Socket closed
+    UMODEM_EVENT_SOCK_DATA_RECEIVED = 5,  // Data available to read on socket
+    UMODEM_EVENT_MQTT_DATA_PUBLISHED = 6, // Data available to read on socket
+    UMODEM_EVENT_MQTT_DATA_RECEIVED = 7,  // Data available to read on socket
   } umodem_event_t;
 
   typedef enum

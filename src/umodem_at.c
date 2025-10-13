@@ -16,10 +16,10 @@ void umodem_at_deinit()
   umodem_hal_deinit();
 }
 
-int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t timeout_ms)
+umodem_result_t umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t timeout_ms)
 {
   if (umodem_hal_send((const uint8_t *)cmd, strlen(cmd)) < 0)
-    return -1;
+    return UMODEM_ERR;
 
   uint32_t time_start = umodem_hal_millis();
   while (umodem_hal_millis() - time_start <= timeout_ms)
@@ -30,26 +30,26 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
 
     int pos = -1;
     size_t match_len = 0;
-    int result = -1;
+    umodem_result_t result = UMODEM_ERR;
 
     // Success responses
     if ((pos = umodem_buffer_find((uint8_t *)"\r\nSEND OK\r\n", 11)) >= 0)
     {
       pos += 2;
       match_len = 9;
-      result = 0;
+      result = UMODEM_OK;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"\r\nOK\r\n", 6)) >= 0)
     {
       pos += 2;
       match_len = 4;
-      result = 0;
+      result = UMODEM_OK;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"\r\n> ", 4)) >= 0)
     {
       pos += 2;
       match_len = 2;
-      result = 0;
+      result = UMODEM_OK;
     }
 
     // Error responses
@@ -57,25 +57,18 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     {
       pos += 2;
       match_len = 7;
-      result = -1;
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"+CME ERROR:", 11)) >= 0)
     {
       int end_pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, pos);
       if (end_pos >= pos + 11)
-      {
         match_len = (size_t)(end_pos - pos) + 2; // include \r\n
-        result = -1;
-      }
     }
     else if ((pos = umodem_buffer_find((uint8_t *)"+CMS ERROR:", 11)) >= 0)
     {
       int end_pos = umodem_buffer_find_from((uint8_t *)"\r\n", 2, pos);
       if (end_pos >= pos + 11)
-      {
         match_len = (size_t)(end_pos - pos) + 2;
-        result = -1;
-      }
     }
 
     if (match_len > 0)
@@ -85,7 +78,7 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
       if (!buf)
       {
         umodem_hal_unlock();
-        return -1; // out of memory
+        return UMODEM_ERR; // out of memory
       }
 
       umodem_buffer_pop(buf, total_len + match_len);
@@ -140,5 +133,5 @@ int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t ti
     umodem_hal_delay_ms(10);
   }
 
-  return -1; // timeout
+  return UMODEM_TIMEOUT; // timeout
 }

@@ -31,7 +31,7 @@ static void *serial_reader(void *arg)
     ssize_t n = read(serial_fd, buf, sizeof(buf));
     if (n > 0)
     {
-      // printf("%.*s", (int)n, buf); // debug print
+      printf("%.*s", (int)n, buf); // debug print
       pthread_mutex_lock(&hal_mutex);
       umodem_buffer_push(buf, (size_t)n);
       pthread_mutex_unlock(&hal_mutex);
@@ -142,7 +142,7 @@ int umodem_hal_send(const uint8_t *buf, size_t len)
     perror("write failed");
     return -1;
   }
-  // printf("-> %.*s\n", (int)len, buf); // debug print
+  printf("-> %.*s\n", (int)len, buf); // debug print
   return (int)written;
 }
 

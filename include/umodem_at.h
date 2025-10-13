@@ -4,6 +4,8 @@
 #include "stdint.h"
 #include "stddef.h"
 
+#include "umodem.h"
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -13,7 +15,7 @@ extern "C"
 
   void umodem_at_deinit(void);
 
-  int umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t timeout_ms);
+  umodem_result_t umodem_at_send(const char *cmd, char *response, size_t resp_len, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

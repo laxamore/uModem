@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "umodem_utils.h"
 #include "umodem_config.h"
 #include "umodem_buffer.h"
 
@@ -14,35 +15,6 @@ typedef struct
 } ring_buffer_t;
 
 static ring_buffer_t ring;
-
-static void *umodem_memmem(const void *haystack, size_t haystacklen,
-                           const void *needle, size_t needlelen)
-{
-  if (needlelen == 0)
-    return (void *)haystack; // empty needle always matches
-  if (haystacklen < needlelen)
-    return NULL;
-
-  const unsigned char *h = (const unsigned char *)haystack;
-  const unsigned char *n = (const unsigned char *)needle;
-
-  const unsigned char first = n[0];
-  size_t last = haystacklen - needlelen + 1;
-
-  for (size_t i = 0; i < last; i++)
-  {
-    if (h[i] == first)
-    {
-      size_t j = 1;
-      while (j < needlelen && h[i + j] == n[j])
-        j++;
-      if (j == needlelen)
-        return (void *)(h + i);
-    }
-  }
-
-  return NULL;
-}
 
 void umodem_buffer_init(size_t *urc_scan_offset)
 {
@@ -182,7 +154,7 @@ int umodem_buffer_find(uint8_t *expect, size_t len)
   if (umodem_buffer_peek_from(linear_buf, 0, ring.count) != (int)ring.count)
     return -1;
 
-  uint8_t *found = umodem_memmem(linear_buf, ring.count, expect, len);
+  uint8_t *found = UMODEM_MEMMEM(linear_buf, ring.count, expect, len);
   return found ? (int)(found - linear_buf) : -1;
 }
 
@@ -203,7 +175,7 @@ int umodem_buffer_find_from(const uint8_t *pattern, size_t pattern_len, size_t s
   if (umodem_buffer_peek_from(linear_buf, start_offset, search_len) != (int)search_len)
     return -1;
 
-  uint8_t *found = umodem_memmem(linear_buf, search_len, pattern, pattern_len);
+  uint8_t *found = UMODEM_MEMMEM(linear_buf, search_len, pattern, pattern_len);
   return found ? (int)(found - linear_buf) + (int)start_offset : -1;
 }
 

@@ -24,4 +24,6 @@
 #define UMODEM_CMD_TIMEOUT_MS 5000
 #endif
 
+#define UMODEM_MQTT_CLIENT_ID_PREFIX 1
+
 #endif
