@@ -19,7 +19,7 @@ add_executable(socket_posix)
 
 target_sources(socket_posix PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/socket_posix.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/posix_hal.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../posix_hal.cpp"
 )
 
 target_include_directories(socket_posix PRIVATE

@@ -39,6 +39,12 @@ umodem_result_t umodem_at_send(const char *cmd, char *response, size_t resp_len,
       match_len = 9;
       result = UMODEM_OK;
     }
+    else if ((pos = umodem_buffer_find((uint8_t *)"\r\nDEACT OK\r\n", 12)) >= 0)
+    {
+      pos += 2;
+      match_len = 10;
+      result = UMODEM_OK;
+    }
     else if ((pos = umodem_buffer_find((uint8_t *)"\r\nOK\r\n", 6)) >= 0)
     {
       pos += 2;

@@ -1,9 +1,14 @@
+#include <chrono>
 #include <signal.h>
 #include <stdio.h>
 #include <cstring>
 
 #include "umodem.h"
 #include "umodem_sock.h"
+
+using namespace std::chrono;
+
+static int sockfd = -1;
 
 static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
 {
@@ -24,7 +29,7 @@ static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
       buf[len] = '\0';
       printf("Received data (%d bytes): %s\n", len, buf);
     }
-    else  
+    else
       printf("Receive error or no data\n");
     break;
   }
@@ -41,6 +46,10 @@ static void sig_handler(int signo)
   printf("\nSignal received, shutting down...\n");
 
   // Cleanup
+  if (sockfd > 0)
+    umodem_sock_close(sockfd);
+
+  umodem_sock_deinit();
   umodem_deinit();
   umodem_power_off();
 
@@ -63,6 +72,13 @@ umodem_apn_t apn_config = {
     .user = "",
     .pass = "",
 };
+
+static uint64_t current_millis()
+{
+  return duration_cast<milliseconds>(
+             system_clock::now().time_since_epoch())
+      .count();
+}
 
 int main()
 {
@@ -96,24 +112,27 @@ int main()
   if (umodem_get_iccid(iccid, sizeof(iccid)) == UMODEM_OK)
     printf("ICCID: %s\n", iccid);
 
-  int sockfd = -1;
-  const char host[] = "tcpbin.com";
-  uint16_t port = 4242;
-
   if (umodem_sock_init() != UMODEM_OK)
   {
     printf("Failed to initialize socket\n");
-    goto cleanup;
+    umodem_sock_deinit();
+    umodem_deinit();
+    umodem_power_off();
   }
 
   sockfd = umodem_sock_create(UMODEM_SOCK_TCP);
   if (sockfd < 0)
   {
     printf("Failed to create socket\n");
-    goto cleanup;
+    umodem_sock_deinit();
+    umodem_deinit();
+    umodem_power_off();
   }
 
   printf("Socket created with fd: %d\n", sockfd);
+
+  const char host[] = "tcpbin.com";
+  uint16_t port = 4242;
 
   if (umodem_sock_connect(sockfd, host, sizeof(host) - 1, port, 10000) == UMODEM_OK)
   {
@@ -124,12 +143,11 @@ int main()
       printf("Data sent\n");
 
       // Wait for response (event-driven)
-      uint32_t start = 0;
-      while (start < 500)
+      uint64_t start = current_millis();
+      while (current_millis() - start <= 5000)
       {
         umodem_poll();
-        usleep(10000); // 10ms
-        start += 1;
+        usleep(1000);
       }
     }
     else
@@ -138,11 +156,9 @@ int main()
   else
     printf("Connect command failed\n");
 
-close_sock:
   umodem_sock_close(sockfd);
   printf("Socket closed\n");
 
-cleanup:
   umodem_sock_deinit();
   umodem_deinit();
   umodem_power_off();

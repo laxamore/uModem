@@ -19,7 +19,7 @@ add_executable(mqtt_publisher_posix)
 
 target_sources(mqtt_publisher_posix PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/mqtt_publisher_posix.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/posix_hal.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../posix_hal.cpp"
 )
 
 target_include_directories(mqtt_publisher_posix PRIVATE
