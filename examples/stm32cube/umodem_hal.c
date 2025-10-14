@@ -68,15 +68,14 @@ void umodem_hal_init(void)
   tx2_sem = osSemaphoreNew(1, 1, NULL);
 
   if (!tx2_sem || !tx2_queue)
-  {
     Error_Handler();
-  }
 
   osThreadAttr_t tx2TaskAttr = {};
   tx2TaskAttr.name = "TX2Task";
   tx2TaskAttr.priority = osPriorityNormal;
-  tx2TaskAttr.stack_size = 128 * 4; // 512 words
-  osThreadNew(tx2_task, NULL, &tx2TaskAttr);
+  tx2TaskAttr.stack_size = 128 * 4; // 128 words
+  if (osThreadNew(tx2_task, NULL, &tx2TaskAttr) == NULL)
+    Error_Handler();
 
   // Start DMA
   HAL_UART_Receive_DMA(&huart2, (uint8_t *)dma_rx2_buffer, DMA_RX_BUFFER_SIZE);
