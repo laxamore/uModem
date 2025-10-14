@@ -1,5 +1,6 @@
 *
 !.gitignore
+!Core/**/*
 !Core/
 !freertos.ioc
 !CMakeLists.txt
