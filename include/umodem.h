@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "umodem_config.h"
+#include "umodem_event.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -21,18 +22,6 @@ extern "C"
 
   typedef enum
   {
-    UMODEM_NO_EVENT = 0,
-    UMODEM_EVENT_DATA_DOWN = 1,           // Data connection deactivated
-    UMODEM_EVENT_SMS_RECEIVED = 2,        // New SMS received (if SMS monitoring enabled)
-    UMODEM_EVENT_SOCK_CONNECTED = 3,      // Socket successfully connected
-    UMODEM_EVENT_SOCK_CLOSED = 4,         // Socket closed
-    UMODEM_EVENT_SOCK_DATA_RECEIVED = 5,  // Data available to read on socket
-    UMODEM_EVENT_MQTT_DATA_PUBLISHED = 6, // Data available to read on socket
-    UMODEM_EVENT_MQTT_DATA_RECEIVED = 7,  // Data available to read on socket
-  } umodem_event_t;
-
-  typedef enum
-  {
     UMODEM_SOCK,
     UMODEM_HTTP,
     UMODEM_MQTT,
@@ -46,20 +35,14 @@ extern "C"
     char pass[32];
   } umodem_apn_t;
 
-  typedef struct
-  {
-    umodem_event_t event;
-    void *event_data;
-  } umodem_event_info_t;
-
   /**
    * @brief Event callback function signature.
    *
-   * @param event_info Event information structure.
+   * @param event_t    Event information structure.
    * @param user_ctx   User-defined context pointer (set via registration).
    * @param len        Length of data in bytes. May be 0.
    */
-  typedef void (*umodem_event_cb_t)(umodem_event_info_t *event_info, void *user_ctx);
+  typedef void (*umodem_event_cb_t)(umodem_event_t *event, void *user_ctx);
 
   /**
    * @brief Initialize the modem library.

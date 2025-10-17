@@ -40,7 +40,7 @@ static inline int umodem_strtoi(const char *str, int min_val, int max_val, int *
   char *endptr;
   errno = 0;
   long val = strtol(str, &endptr, 10);
-  if (errno != 0 || endptr == str || *endptr != '\0')
+  if (errno != 0 || endptr == str)
     return 0; // invalid input
   if (val < min_val || val > max_val)
     return 0;

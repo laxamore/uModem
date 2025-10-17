@@ -8,6 +8,10 @@
 
 using namespace std::chrono;
 
+static char subs_topic[] = "test/umodem/subscribe";
+static int sockfd = -1;
+static int received_data = 0;
+
 static void on_umodem_event(umodem_event_t* event, void* user_ctx) {
   umodem_event_flag_t event_flag = umodem_event_get_flag(event);
   switch (event_flag) {
@@ -16,9 +20,18 @@ static void on_umodem_event(umodem_event_t* event, void* user_ctx) {
     printf("Socket connected! on fd %d\n", *(int*)event_data);
     break;
   }
-  case UMODEM_EVENT_MQTT_DATA_PUBLISHED: {
-    umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*) umodem_get_event_data(event);
-    printf("MQTT message published on fd %d\n", event_data->sockfd);
+  case UMODEM_EVENT_MQTT_DATA_RECEIVED: {
+    umodem_event_mqtt_data_t* event_data =
+        (umodem_event_mqtt_data_t*)umodem_get_event_data(event);
+    printf("MQTT message received on fd %d and msg_id %d\n", event_data->sockfd,
+        event_data->id);
+
+    char payload_str[event_data->data_len + 1];
+    memcpy(payload_str, event_data->data, event_data->data_len);
+    payload_str[event_data->data_len] = '\0';
+
+    printf("With payload: %s\n", payload_str);
+    received_data++;
     break;
   }
   case UMODEM_EVENT_SOCK_CLOSED: printf("Socket closed\n"); break;
@@ -30,6 +43,8 @@ static void sig_handler(int signo) {
   printf("\nSignal received, shutting down...\n");
 
   // Cleanup
+  umodem_mqtt_unsubscribe(sockfd, subs_topic, sizeof(subs_topic));
+  umodem_mqtt_deinit();
   umodem_deinit();
   umodem_power_off();
 
@@ -91,7 +106,7 @@ int main() {
     umodem_mqtt_deinit();
     umodem_deinit();
     umodem_power_off();
-    return 0;
+    return -1;
   }
 
   printf("MQTT Initialized\n");
@@ -110,42 +125,38 @@ int main() {
       .disable_clean_session = 0,
   };
 
-  int sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
+  sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
   if (sockfd <= 0) {
     printf("Failed to connect MQTT\n");
     umodem_mqtt_deinit();
     umodem_deinit();
     umodem_power_off();
-    return 0;
+    return -1;
   }
 
   printf("Connected to MQTT Broker\n");
 
-  uint64_t start = current_millis() - 5000;
-  int count = 0;
-  while (count < 5) {
-    uint64_t now = current_millis();
-    if (now - start >= 5000) {
-      count++;
-      start = now;
-      char payload[] = "hello_world";
-      char topic[] = "test/umodem";
-      if (umodem_mqtt_publish(sockfd, topic, sizeof(topic), payload, sizeof(payload),
-              UMODEM_MQTT_QOS_2, 0))
-        printf("Failed to publish MQTT message.\n");
-    }
+  if (umodem_mqtt_subscribe(sockfd, subs_topic, sizeof(subs_topic),
+          UMODEM_MQTT_QOS_2) != UMODEM_OK) {
+    printf("Failed to subscribe to topic %s\n", subs_topic);
+
+    if (umodem_mqtt_disconnect(sockfd) != UMODEM_OK)
+      printf("Failed to disconnect MQTT\n");
+    else
+      printf("Disconnected from MQTT Broker\n");
+
+    umodem_mqtt_deinit();
+    umodem_deinit();
+    umodem_power_off();
+    return -1;
+  }
+
+  while (received_data < 3) {
     umodem_poll();
     usleep(1000);
   }
 
-  sleep(5);
-  umodem_poll();
-
-  if (umodem_mqtt_disconnect(sockfd) != UMODEM_OK)
-    printf("Failed to disconnect MQTT\n");
-  else
-    printf("Disconnected from MQTT Broker\n");
-
+  umodem_mqtt_unsubscribe(sockfd, subs_topic, sizeof(subs_topic));
   umodem_mqtt_deinit();
   umodem_deinit();
   umodem_power_off();

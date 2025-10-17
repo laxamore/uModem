@@ -14,7 +14,7 @@
  */
 #define UMODEM_MODEM_QUECTEL_M65
 
-/* Size of the RX ring buffer used by parser (bytes). */
+/* Size of the RX ring buffer (bytes). */
 #ifndef UMODEM_RX_BUF_SIZE
 #define UMODEM_RX_BUF_SIZE 256
 #endif

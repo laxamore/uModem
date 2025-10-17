@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 file(GLOB UMODEM_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../drivers/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../drivers/quectel_m65/*.c"
 )
 
 add_library(umodem STATIC ${UMODEM_SOURCES})

@@ -18,13 +18,13 @@ static void *g_user_ctx = NULL;
 static size_t urc_scan_offset = 0;
 
 // URC handler function
-typedef umodem_event_info_t (*umodem_urc_handler_t)(const uint8_t *line, size_t len);
-static umodem_event_info_t g_event_queue[MAX_QUEUED_EVENTS];
+typedef umodem_event_t (*umodem_urc_handler_t)(const char *line, size_t len);
+static umodem_event_t g_event_queue[MAX_QUEUED_EVENTS];
 static size_t g_event_queue_len = 0;
 
-static void queue_event(umodem_event_info_t event)
+static void queue_event(umodem_event_t event)
 {
-  if (g_event_queue_len < MAX_QUEUED_EVENTS && event.event != UMODEM_NO_EVENT && event.event > 0)
+  if (g_event_queue_len < MAX_QUEUED_EVENTS && event.event_flag != UMODEM_NO_EVENT && event.event_flag > 0)
     g_event_queue[g_event_queue_len++] = event;
 }
 
@@ -32,10 +32,12 @@ static void dispatch_queued_events(void)
 {
   while (g_event_queue_len > 0)
   {
-    umodem_event_info_t event = g_event_queue[g_event_queue_len - 1];
+    umodem_event_t event = g_event_queue[g_event_queue_len - 1];
     g_event_queue_len--;
     if (g_event_cb)
       g_event_cb(&event, g_user_ctx);
+    if (event.dtor)
+      event.dtor(&event);
   }
 }
 
@@ -53,7 +55,7 @@ umodem_result_t umodem_init(umodem_apn_t *apn)
   umodem_buffer_init(&urc_scan_offset);
   umodem_at_init();
 
-  umodem_hal_send((const uint8_t*)"\r\n\r\n", 4);
+  umodem_hal_send((const uint8_t *)"\r\n\r\n", 4);
   umodem_hal_delay_ms(100);
 
   result = g_umodem_driver->init();
@@ -144,7 +146,7 @@ static int umodem_buffer_process_urcs(umodem_urc_handler_t handler)
     buf[line_len] = '\0';
 
     // Call handler
-    umodem_event_info_t event_info = handler((uint8_t *)buf, line_len);
+    umodem_event_t event_info = handler((uint8_t *)buf, line_len);
     queue_event(event_info);
 
     lines_processed++;
