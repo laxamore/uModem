@@ -32,14 +32,14 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 enable_language(C ASM)
 
 file(GLOB UMODEM_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../src/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../drivers/*.c"
 )
 
 add_library(umodem STATIC ${UMODEM_SOURCES})
 
 target_include_directories(umodem PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../"
 )
 
 # Create an executable object type
@@ -62,7 +62,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../"
 )
 
 # Add project symbols (macros)

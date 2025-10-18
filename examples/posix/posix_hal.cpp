@@ -9,7 +9,7 @@
 #include <string.h>
 #include <errno.h>
 
-#include "umodem_hal.h"
+#include "port/umodem_port.h"
 #include "umodem_buffer.h"
 
 static int serial_fd = -1;

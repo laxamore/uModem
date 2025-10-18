@@ -1,42 +1,5 @@
-/**
- * @file umodem_hal.h
- * @brief Hardware Abstraction Layer (HAL) interface for uModem.
- *
- * This header defines the minimal set of functions that **must be implemented**
- * by the user or port layer (e.g., in `ports/posix/`, `ports/stm32/`, etc.)
- * to adapt uModem to a specific hardware platform or transport (UART, USB, TCP, etc.).
- *
- * ### Key Responsibilities of the HAL Implementation:
- *
- * 1. **Transmit**: Implement `umodem_hal_send()` to send AT commands to the modem.
- * 2. **Receive**: **Crucially**, whenever data is received from the modem
- *    (e.g., in a UART RX interrupt, USB callback, or socket read loop),
- *    the HAL **MUST** call `umodem_buffer_push()` (from `umodem_buffer.h`)
- *    to deliver the bytes to the uModem core.
- *
- *    Example (in your HAL code):
- *    ```c
- *    // Inside UART RX handler or polling loop:
- *    uint8_t byte = read_uart_byte();
- *    umodem_buffer_push(&byte, 1);
- *    ```
- *
- * 3. **Timing**: Provide monotonic millisecond time via `umodem_hal_millis()`.
- * 4. **Synchronization (if needed)**: If receive callbacks run in an ISR
- *    or a different thread than `umodem_poll()`, implement `umodem_hal_lock()`
- *    and `umodem_hal_unlock()` to protect shared state (e.g., the ring buffer).
- *    If not needed, provide empty stubs.
- *
- * ### Thread/ISR Safety Note:
- * The uModem core is **not thread-safe**. If your HAL receives data in an ISR
- * or RTOS task, you **must** use `umodem_hal_lock/unlock` around any access
- * to uModem internal state (especially when calling `umodem_buffer_push`).
- *
- * All HAL functions may be called from interrupt context unless otherwise noted.
- */
-
-#ifndef uMODEM_HAL_H_
-#define uMODEM_HAL_H_
+#ifndef uMODEM_PORT_H_
+#define uMODEM_PORT_H_
 
 #include <stdint.h>
 #include <stddef.h>

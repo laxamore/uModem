@@ -382,21 +382,22 @@ static void MX_GPIO_Init(void)
  * @param  argument: Not used
  * @retval None
  */
-static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
-{
-  switch (event_info->event)
-  {
-  case UMODEM_EVENT_SOCK_CONNECTED:
-    printf("Socket connected! on fd %d\n", *(int *)event_info->event_data);
+static void on_umodem_event(umodem_event_t* event, void* user_ctx) {
+  umodem_event_flag_t event_flag = umodem_event_get_flag(event);
+  switch (event_flag) {
+  case UMODEM_EVENT_SOCK_CONNECTED: {
+    void* event_data = umodem_get_event_data(event);
+    printf("Socket connected! on fd %d\n", *(int*)event_data);
     break;
-  case UMODEM_EVENT_MQTT_DATA_PUBLISHED:
-    printf("MQTT message published on fd %d\n", *(int *)event_info->event_data);
+  }
+  case UMODEM_EVENT_MQTT_DATA_PUBLISHED: {
+    umodem_event_mqtt_data_t* event_data =
+        (umodem_event_mqtt_data_t*)umodem_get_event_data(event);
+    printf("MQTT message published on fd %d\n", event_data->sockfd);
     break;
-  case UMODEM_EVENT_SOCK_CLOSED:
-    printf("Socket closed\n");
-    break;
-  default:
-    break;
+  }
+  case UMODEM_EVENT_SOCK_CLOSED: printf("Socket closed\n"); break;
+  default: break;
   }
 }
 
@@ -505,8 +506,9 @@ void StartPublisherTask(void *argument)
     {
       // count++;
       char payload[] = "hello_world";
-      if (umodem_mqtt_publish(sockfd, "test/umodem", payload, sizeof(payload),
-                              UMODEM_MQTT_QOS_2, 0))
+      char topic[] = "test/umodem";
+      if (umodem_mqtt_publish(sockfd, topic, sizeof(topic), payload,
+              sizeof(payload), UMODEM_MQTT_QOS_2, 0))
         printf("Failed to publish MQTT message.\n");
     }
     osSemaphoreRelease(sockfd_semHandle);

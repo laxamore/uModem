@@ -1,10 +1,10 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "umodem.h"
-#include "umodem_hal.h"
+#include "umodem_core.h"
 #include "umodem_at.h"
 #include "umodem_buffer.h"
+#include "port/umodem_port.h"
 
 void umodem_at_init()
 {

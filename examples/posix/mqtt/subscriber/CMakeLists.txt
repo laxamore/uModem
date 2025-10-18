@@ -5,14 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 file(GLOB UMODEM_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../src/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../drivers/quectel_m65/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../drivers/*.c"
 )
 
 add_library(umodem STATIC ${UMODEM_SOURCES})
 
 target_include_directories(umodem PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../"
 )
 
 add_executable(mqtt_subscriber_posix)
@@ -23,7 +23,7 @@ target_sources(mqtt_subscriber_posix PRIVATE
 )
 
 target_include_directories(mqtt_subscriber_posix PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../"
 )
 
 target_link_libraries(mqtt_subscriber_posix PRIVATE

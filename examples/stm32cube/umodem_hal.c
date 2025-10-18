@@ -4,7 +4,7 @@
 
 #include "main.h"
 #include "cmsis_os.h"
-#include "umodem_hal.h"
+#include "por/tumodem_port.h"
 #include "umodem_buffer.h"
 
 #define DMA_RX_BUFFER_SIZE 64

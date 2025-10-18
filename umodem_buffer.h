@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "umodem.h"
+#include "umodem_core.h"
 
 #ifdef __cplusplus
 extern "C"

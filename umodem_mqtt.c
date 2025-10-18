@@ -3,7 +3,7 @@
 
 #include "umodem_mqtt.h"
 #include "umodem_driver.h"
-#include "umodem_utils.h"
+#include "umodem_core.h"
 
 umodem_result_t umodem_mqtt_init(void) {
   if (g_umodem_driver == NULL || g_umodem_driver->mqtt_driver == NULL ||

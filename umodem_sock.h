@@ -6,7 +6,7 @@ extern "C"
 {
 #endif
 
-#include "umodem.h"
+#include "umodem_core.h"
 
   typedef enum
   {

@@ -1,7 +1,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "umodem_utils.h"
+#include "umodem_core.h"
 #include "umodem_config.h"
 #include "umodem_buffer.h"
 

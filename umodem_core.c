@@ -4,10 +4,10 @@
 #include <stdint.h>
 
 #include "umodem.h"
+
 #include "umodem_at.h"
-#include "umodem_hal.h"
+#include "port/umodem_port.h"
 #include "umodem_buffer.h"
-#include "umodem_config.h"
 #include "umodem_driver.h"
 
 #define MAX_QUEUED_EVENTS 10
@@ -166,17 +166,12 @@ void umodem_poll(void)
   umodem_hal_lock();
 
   // Read new data
-  uint8_t *read_buf = calloc(UMODEM_RX_BUF_SIZE / 2, 1);
-  if (!read_buf)
-  {
-    umodem_hal_unlock();
-    return;
-  }
+  uint8_t read_buf[UMODEM_RX_BUF_SIZE] = {0};
+  umodem_hal_unlock();
 
   size_t len = umodem_hal_read(read_buf, sizeof(read_buf));
   if (len > 0)
     umodem_buffer_push(read_buf, len);
-  free(read_buf);
 
   // Process all new URC lines
   umodem_buffer_process_urcs(g_umodem_driver->handle_urc);
@@ -184,4 +179,14 @@ void umodem_poll(void)
   umodem_hal_unlock();
 
   dispatch_queued_events();
+}
+
+umodem_event_flag_t umodem_event_get_flag(umodem_event_t *event)
+{
+  return event->event_flag;
+}
+
+void* umodem_get_event_data(umodem_event_t *event)
+{
+  return event->data;
 }

@@ -12,7 +12,9 @@
 /* Select your modem vendor/family.
  * Uncomment ONE of the following:
  */
+#ifndef UMODEM_MODEM_QUECTEL_M65
 #define UMODEM_MODEM_QUECTEL_M65
+#endif
 
 /* Size of the RX ring buffer (bytes). */
 #ifndef UMODEM_RX_BUF_SIZE
