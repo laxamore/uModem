@@ -136,8 +136,6 @@ static int umodem_buffer_process_urcs(umodem_urc_handler_t handler) {
 }
 
 void umodem_poll(void) {
-  if (g_umodem_driver->umodem_initialized == 0) return;
-
   umodem_hal_lock();
 
   // Read new data
@@ -154,6 +152,7 @@ void umodem_poll(void) {
 
   umodem_hal_unlock();
 
+  if (g_umodem_driver->umodem_initialized == 0) return;
   dispatch_queued_events();
 }
 
