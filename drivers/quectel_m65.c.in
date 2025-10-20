@@ -1,59 +1,105 @@
+/**
+ * This module implements the complete AT-command-based driver for the
+ * Quectel M65 GSM/GPRS modem. It supports modem initialization, SIM detection,
+ * network registration, socket operations (TCP/UDP), and MQTT publish/subscribe,
+ * HTTP and PPP not yet implemented.
+ *
+ * The driver conforms to the `umodem_driver_t` interface and is automatically
+ * registered as the active driver via `g_umodem_driver`.
+ *
+ * -------------------------------------------------------------------------
+ * Features:
+ *  - Software-controlled modem reset and initialization
+ *  - SIM card presence detection
+ *  - Network registration and PDP activation
+ *  - Socket layer (TCP/UDP) management
+ *  - MQTT connection, publishing, and subscription
+ *  - URC (Unsolicited Result Code) event parsing
+ *
+ * -------------------------------------------------------------------------
+ * Dependencies:
+ *  - umodem_core.c : Core logic, event system, and poll handler
+ *  - umodem_at.c   : AT command layer abstraction
+ *  - umodem_port.c : HAL (UART/USB/Socket) abstraction
+ *
+ * -------------------------------------------------------------------------
+ */
+
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 #include "umodem.h"
+
+#include "umodem_driver.h"
 #include "umodem_at.h"
 #include "umodem_core.h"
-#include "umodem_driver.h"
 
 #include "port/umodem_port.h"
 
-#define QIRD_RESPONSE_BUF_SIZE (64 + QIRD_MAX_RECV_LEN)
+/*======================================================================
+ *                              DEFINES
+ *====================================================================*/
+
+/** @brief Socket and MQTT limits for Quectel M65 */
 #define QUECTEL_M65_MAX_SOCKETS 6
-
-#define QIMUX_TIMEOUT_MS (1000 * 2)
-#define QINDI_TIMEOUT_MS (1000 * 2)
-#define QIREGAPP_TIMEOUT_MS (1000 * 5)
-#define QIACT_TIMEOUT_MS (1000 * 150)
-#define QIDEACT_TIMEOUT_MS (1000 * 40)
-#define NETWORK_ATTACH_TIMEOUT_MS (1000 * 90)
-
-#define QIOPEN_TIMEOUT_MS (1000 * 10)
-#define QICLOSE_TIMEOUT_MS (1000 * 5)
-#define QISEND_CMD_TIMEOUT_MS (1000 * 5)
-#define QISEND_DATA_TIMEOUT_MS (1000 * 10)
-#define QIRD_TIMEOUT_MS (1000 * 5)
-
-#define QIRD_MAX_RECV_LEN 1500 // MTU-sized
-#define QISEND_MAX_SEND_LEN 1460
-
-#define QMTCFG_TIMEOUT_MS (1000 * 5)
-#define QMTOPEN_TIMEOUT_MS (1000 * 75)
-#define QMTCONN_TIMEOUT_MS (1000 * 60)
-
 #define QUECTEL_M65_MAX_MQTT_CONNS QUECTEL_M65_MAX_SOCKETS
 
+/** @brief Network, PDP, and MQTT timeouts (in milliseconds) */
+#define QIMUX_TIMEOUT_MS (2000)
+#define QINDI_TIMEOUT_MS (2000)
+#define QIREGAPP_TIMEOUT_MS (5000)
+#define QIACT_TIMEOUT_MS (150000)
+#define QIDEACT_TIMEOUT_MS (40000)
+#define NETWORK_ATTACH_TIMEOUT_MS (90000)
+#define QIOPEN_TIMEOUT_MS (10000)
+#define QICLOSE_TIMEOUT_MS (5000)
+#define QISEND_CMD_TIMEOUT_MS (5000)
+#define QISEND_DATA_TIMEOUT_MS (10000)
+#define QIRD_TIMEOUT_MS (5000)
+#define QMTCFG_TIMEOUT_MS (5000)
+#define QMTOPEN_TIMEOUT_MS (75000)
+#define QMTCONN_TIMEOUT_MS (60000)
+
+/** @brief Data length limits */
+#define QIRD_MAX_RECV_LEN 1500   /**< Approx. MTU-sized receive buffer */
+#define QISEND_MAX_SEND_LEN 1460 /**< Maximum transmit payload length */
+#define QIRD_RESPONSE_BUF_SIZE (64 + QIRD_MAX_RECV_LEN)
+
+/*======================================================================
+ *                              INTERNAL TYPES
+ *====================================================================*/
+
+/**
+ * @brief Socket instance representation for M65.
+ */
 typedef struct {
   int sockfd;
   umodem_sock_type_t type;
-  int connected;
+  int connected; /**< 0 = closed, 1 = connected, -1 = failed */
 } quectel_m65_socket_t;
 
+/**
+ * @brief Internal MQTT message node (linked list).
+ */
 typedef struct mqtt_message mqtt_message_t;
 struct mqtt_message {
   umodem_event_mqtt_data_t* event_data;
   mqtt_message_t* next;
 };
 
+/**
+ * @brief MQTT connection context for M65.
+ */
 typedef struct {
   quectel_m65_socket_t sock;
   int context_open;
 } quectel_m65_mqtt_conn_t;
 
-static int g_mqtt_initialized = 0;
-static mqtt_message_t* g_mqtt_messages = NULL;
+/*======================================================================
+ *                              STATIC VARIABLES
+ *====================================================================*/
 
 static int g_modem_functional = 0;
 static int g_sim_inserted = 0;
@@ -63,18 +109,191 @@ static int g_network_attached = 0;
 static quectel_m65_socket_t g_sockets[QUECTEL_M65_MAX_SOCKETS] = {0};
 static quectel_m65_mqtt_conn_t g_mqtt_conns[QUECTEL_M65_MAX_MQTT_CONNS] = {0};
 
-static umodem_event_mqtt_data_t* mqtt_get_message_by_topic(
-    const char* topic, size_t topic_len);
-static umodem_event_mqtt_data_t* mqtt_pop_message(uint16_t id);
-static uint16_t mqtt_add_message(uint8_t sockfd, const char* topic,
-    size_t topic_len, const uint8_t* payload, size_t len, uint8_t type);
-static void umodem_event_mqtt_pub_dtor(umodem_event_t* self);
-static void umodem_event_mqtt_sub_dtor(umodem_event_t* self);
+static int g_mqtt_initialized = 0;
+static mqtt_message_t* g_mqtt_messages = NULL;
 
+/*======================================================================
+ *                              HELPER FUNCTIONS
+ *====================================================================*/
+
+/** @brief Validate hostname for AT command safety.
+ *
+ * @param host Hostname string
+ * @param len Length of hostname
+ * @return 1 if valid, 0 otherwise
+ */
+static int is_valid_hostname(const char* host, size_t len) {
+  if (!host || len == 0) return 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = host[i];
+    if (c == '"' || c == '\r' || c == '\n' || c == ',')
+      return 0; // unsafe for AT command
+  }
+  return 1;
+}
+
+/** @brief Pop and remove MQTT message by ID from internal list.
+ *
+ * @param id Message ID to pop
+ * 
+ * @return Pointer to umodem_event_mqtt_data_t if found, NULL otherwise
+ */
+static umodem_event_mqtt_data_t* mqtt_pop_message(uint16_t id) {
+  umodem_event_mqtt_data_t* event_data = NULL;
+
+  mqtt_message_t* prev = NULL;
+  mqtt_message_t* cur = g_mqtt_messages;
+  while (cur) {
+    if (cur->event_data->id == id) {
+      event_data = cur->event_data;
+
+      if (prev)
+        prev->next = cur->next;
+      else
+        g_mqtt_messages = cur->next;
+
+      umodem_hal_free(cur);
+      break;
+    }
+
+    prev = cur;
+    cur = cur->next;
+  }
+
+  return event_data;
+}
+
+/** @brief Add a new MQTT message to internal list.
+ *
+ * @param sockfd MQTT socket file descriptor
+ * @param topic Topic string
+ * @param topic_len Length of topic string
+ * @param payload Payload data
+ * @param len Length of payload data
+ * @param type Message type (publish/subscribe)
+ * 
+ * @return Assigned message ID, or 0 on failure
+ */
+static uint16_t mqtt_add_message(uint8_t sockfd, const char* topic,
+    size_t topic_len, const uint8_t* payload, size_t len, uint8_t type) {
+  static uint16_t id = 0;
+
+  umodem_event_mqtt_data_t* mqtt_event_data =
+      umodem_hal_alloc(sizeof(umodem_event_mqtt_data_t));
+  memset(mqtt_event_data, 0, sizeof(umodem_event_mqtt_data_t));
+  if (!mqtt_event_data) return 0;
+
+  mqtt_event_data->sockfd = sockfd;
+  mqtt_event_data->topic = topic;
+  mqtt_event_data->topic_len = topic_len;
+  mqtt_event_data->data_len = len;
+
+  uint8_t* msg_payload = NULL;
+  if (payload && len > 0) {
+    msg_payload = umodem_hal_alloc(len);
+    memset(msg_payload, 0, len);
+    if (!msg_payload) {
+      umodem_hal_free(mqtt_event_data);
+      return 0;
+    }
+
+    memcpy(msg_payload, payload, len);
+    mqtt_event_data->data = msg_payload;
+  }
+
+  mqtt_message_t* mqtt_message = umodem_hal_alloc(sizeof(mqtt_message_t));
+  memset(mqtt_message, 0, sizeof(mqtt_message_t));
+  if (!mqtt_message) {
+    umodem_hal_free(mqtt_event_data);
+    if (msg_payload) umodem_hal_free(msg_payload);
+    return 0;
+  }
+  mqtt_message->next = NULL;
+  mqtt_message->event_data = mqtt_event_data;
+
+  id = id == 65535 ? 1 : id + 1;
+  if (!g_mqtt_messages) {
+    mqtt_event_data->id = id;
+    g_mqtt_messages = mqtt_message;
+  } else {
+    mqtt_event_data->id = id;
+    g_mqtt_messages->next = mqtt_message;
+  }
+
+  return id;
+}
+
+/** @brief Retrieve MQTT message by topic from internal list.
+ *
+ * @param topic Topic string
+ * @param topic_len Length of topic string
+ * 
+ * @return Pointer to umodem_event_mqtt_data_t if found, NULL otherwise
+ */
+static umodem_event_mqtt_data_t* mqtt_get_message_by_topic(
+    const char* topic, size_t topic_len) {
+  umodem_event_mqtt_data_t* event_data = NULL;
+
+  mqtt_message_t* cur = g_mqtt_messages;
+  while (cur) {
+    if (UMODEM_MEMMEM(cur->event_data->topic, cur->event_data->topic_len, topic,
+            topic_len))
+      return cur->event_data;
+    cur = cur->next;
+  }
+
+  return event_data;
+}
+
+/** @brief Find MQTT message ID by socket and topic.
+ *
+ * @param sockfd MQTT socket file descriptor
+ * @param topic Topic string
+ * @param topic_len Length of topic string
+ * 
+ * @return Message ID if found, 0 otherwise
+ */
+static uint16_t find_mqtt_message_id(
+    int sockfd, const char* topic, size_t topic_len) {
+  mqtt_message_t* cur = g_mqtt_messages;
+  while (cur) {
+    if (UMODEM_MEMMEM(cur->event_data->topic, cur->event_data->topic_len, topic,
+            topic_len) &&
+        cur->event_data->sockfd == sockfd)
+      return cur->event_data->id;
+    cur = cur->next;
+  }
+  return 0;
+}
+
+/** @brief Destructor for MQTT publish event data.
+ *
+ * @param self Pointer to umodem_event_t
+ */
+static void umodem_event_mqtt_pub_dtor(umodem_event_t* self) {
+  umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*)self->data;
+  umodem_hal_free(event_data->data);
+  umodem_hal_free(event_data);
+}
+
+/** @brief Destructor for MQTT subscribe event data.
+ *
+ * @param self Pointer to umodem_event_t
+ */
+static void umodem_event_mqtt_sub_dtor(umodem_event_t* self) {
+  umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*)self->data;
+  umodem_hal_free(event_data->data);
+  event_data->data = NULL;
+}
+
+/** @brief Check SIM card status.
+ *
+ * @return UMODEM_OK if SIM is ready, UMODEM_SIM_NOT_INSERTED otherwise
+ */
 static umodem_result_t check_sim_status(void) {
   char response[64];
-  if (umodem_at_send("AT+CPIN?\r", response, sizeof(response), 2000) !=
-      UMODEM_OK)
+  if (umodem_at_send("AT+CPIN?\r", response, sizeof(response),
+          UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
     return UMODEM_ERR;
 
   if (strstr(response, "READY")) {
@@ -86,6 +305,14 @@ static umodem_result_t check_sim_status(void) {
   }
 }
 
+/*======================================================================
+ *                              CORE DRIVER API
+ *====================================================================*/
+
+/** @brief Initialize the Quectel M65 modem.
+ *
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_init() {
   g_modem_functional = 0;
   g_sim_inserted = 0;
@@ -93,7 +320,8 @@ static umodem_result_t quectel_m65_init() {
   g_network_attached = 0;
 
   // Software Restart Modem
-  if (umodem_at_send("AT+CFUN=1,1\r", NULL, 0, 1000) != UMODEM_OK)
+  if (umodem_at_send("AT+CFUN=1,1\r", NULL, 0, UMODEM_CMD_TIMEOUT_MS) !=
+      UMODEM_OK)
     return UMODEM_ERR;
 
   // Wait for modem to restart
@@ -102,7 +330,7 @@ static umodem_result_t quectel_m65_init() {
   // AT
   uint32_t init_start = umodem_hal_millis();
   while (umodem_hal_millis() - init_start < 10000) {
-    if (umodem_at_send("AT\r", NULL, 0, 1000) == UMODEM_OK) {
+    if (umodem_at_send("AT\r", NULL, 0, UMODEM_CMD_TIMEOUT_MS) == UMODEM_OK) {
       g_modem_functional = 1;
       break;
     }
@@ -110,10 +338,12 @@ static umodem_result_t quectel_m65_init() {
   if (!g_modem_functional) return UMODEM_TIMEOUT;
 
   // Disable command echo
-  if (umodem_at_send("ATE0\r", NULL, 0, 1000) != UMODEM_OK) return UMODEM_ERR;
+  if (umodem_at_send("ATE0\r", NULL, 0, UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
+    return UMODEM_ERR;
 
   // Set modem to verbose error mode
-  if (umodem_at_send("AT+CMEE=2\r", NULL, 0, 1000) != UMODEM_OK)
+  if (umodem_at_send("AT+CMEE=2\r", NULL, 0, UMODEM_CMD_TIMEOUT_MS) !=
+      UMODEM_OK)
     return UMODEM_ERR;
 
   // Check SIM status
@@ -126,38 +356,64 @@ static umodem_result_t quectel_m65_init() {
   if (g_sim_inserted == 0) return UMODEM_SIM_NOT_INSERTED;
 
   // Enable network registration URCs
-  if (umodem_at_send("AT+CREG=1\r", NULL, 0, 1000) != UMODEM_OK)
+  if (umodem_at_send("AT+CREG=1\r", NULL, 0, UMODEM_CMD_TIMEOUT_MS) !=
+      UMODEM_OK)
     return UMODEM_ERR;
 
   return UMODEM_OK;
 }
 
+/** @brief Deinitialize the Quectel M65 modem.
+ *
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_deinit(void) { return UMODEM_OK; }
 
+/** @brief Get the IMEI of the Quectel M65 modem.
+ *
+ * @param buf Buffer to store the IMEI string
+ * @param buf_size Size of the buffer
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_get_imei(char* buf, size_t buf_size) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
   if (!buf || buf_size == 0) return UMODEM_PARAM;
 
-  return umodem_at_send("AT+CGSN\r", buf, buf_size, 5000);
+  return umodem_at_send("AT+CGSN\r", buf, buf_size, UMODEM_CMD_TIMEOUT_MS);
 }
 
+/** @brief Get the ICCID of the SIM card.
+ *
+ * @param buf Buffer to store the ICCID string
+ * @param buf_size Size of the buffer
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_get_iccid(char* buf, size_t buf_size) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
 
   if (!buf || buf_size == 0) return UMODEM_PARAM;
 
-  return umodem_at_send("AT+QCCID\r", buf, buf_size, 5000);
+  return umodem_at_send("AT+QCCID\r", buf, buf_size, UMODEM_CMD_TIMEOUT_MS);
 }
 
+/** @brief Get signal quality (RSSI and BER).
+ *
+ * @param rssi Pointer to store RSSI value
+ * @param ber Pointer to store BER value
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_get_signal(int* rssi, int* ber) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
 
   if (!rssi || !ber) return UMODEM_PARAM;
   char response[32];
-  if (umodem_at_send("AT+CSQ\r", response, sizeof(response), 2000) != UMODEM_OK)
+  if (umodem_at_send("AT+CSQ\r", response, sizeof(response),
+          UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
     return UMODEM_ERR;
   // +CSQ: <rssi>,<ber>
-  char* saveptr;
   char* csq = memchr(response, ':', sizeof(response));
   if (!csq) return UMODEM_ERR;
   if (!UMODEM_STRTOI(csq + 2, INT_MIN, INT_MAX, rssi)) return UMODEM_ERR;
@@ -167,12 +423,30 @@ static umodem_result_t quectel_m65_get_signal(int* rssi, int* ber) {
   return UMODEM_OK;
 }
 
+/*======================================================================
+ *                          URC HANDLER FUNCTIONS
+ *====================================================================*/
+
+/** @brief Handle URC (Unsolicited Result Code) messages from the modem.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_pdp_deact(
     const char* buf, size_t len) {
   g_data_connected = 0;
   return (umodem_event_t){0};
 }
 
+/** @brief Handle +CREG URC for network registration status.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_creg(const char* buf, size_t len) {
   // Expect: "+CREG: <stat>"
   const char* space = memchr(buf, ' ', len);
@@ -183,6 +457,13 @@ static umodem_event_t quectel_m65_handle_creg(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Handle CONNECT OK URC for socket connections.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_connect_ok(
     const char* buf, size_t len) {
   // Expect: "<sockfd>, CONNECT OK"
@@ -197,6 +478,13 @@ static umodem_event_t quectel_m65_handle_connect_ok(
       .dtor = NULL};
 }
 
+/** @brief Handle CONNECT FAIL URC for socket connections.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_connect_fail(
     const char* buf, size_t len) {
   // Expect: "<sockfd>, CONNECT FAIL"
@@ -208,6 +496,13 @@ static umodem_event_t quectel_m65_handle_connect_fail(
   return (umodem_event_t){0};
 }
 
+/** @brief Handle CLOSED URC for socket connections.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_closed(const char* buf, size_t len) {
   // Expect: "<sockfd>, CLOSED"
   static int closed_sockfd = 0;
@@ -222,6 +517,13 @@ static umodem_event_t quectel_m65_handle_closed(const char* buf, size_t len) {
       .dtor = NULL};
 }
 
+/** @brief Handle QIRDI URC for incoming socket data.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_qirdi(const char* buf, size_t len) {
   // Expect: "+QIRDI: 0,1,<sockfd>"
   const char* colon = memchr(buf, ':', len);
@@ -246,6 +548,13 @@ static umodem_event_t quectel_m65_handle_qirdi(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Handle QMTOPEN URC for MQTT connection open result.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_qmtopen(const char* buf, size_t len) {
   // Expect: "+QMTOPEN: <sockfd>,<result>"
   char* qmtopen = memchr(buf, ':', len);
@@ -268,6 +577,13 @@ static umodem_event_t quectel_m65_handle_qmtopen(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Handle QMTCONN URC for MQTT connection result.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_qmtconn(const char* buf, size_t len) {
   // Expect: "+QMTCONN: <sockfd>,<result>,<retcode>"
   char* qmtconn = memchr(buf, ':', len);
@@ -315,6 +631,13 @@ static umodem_event_t quectel_m65_handle_qmtconn(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Handle QMTPUB URC for MQTT publish result.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_qmtpub(const char* buf, size_t len) {
   // Expect: "+QMTPUB: <sockfd>,<msg_id>,<result>"
   char* qmtpub = memchr(buf, ':', len);
@@ -343,6 +666,13 @@ static umodem_event_t quectel_m65_handle_qmtpub(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Handle QMTRECV URC for incoming MQTT messages.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_qmtrecv(const char* buf, size_t len) {
   // Expect: "+QMTRECV: <sockfd>,<msg_id>,<topic>,<payload>"
   char* qmtrecv = memchr(buf, ':', len);
@@ -371,7 +701,8 @@ static umodem_event_t quectel_m65_handle_qmtrecv(const char* buf, size_t len) {
 
     size_t payload_size = (buf + len) - payload_start - 2; // 2 is \r\n
     if (payload_size <= 0) return (umodem_event_t){0};
-    event_data->data = calloc(payload_size, 1);
+    event_data->data = umodem_hal_alloc(payload_size);
+    memset(event_data->data, 0, payload_size);
     if (!event_data->data) return (umodem_event_t){0};
 
     memcpy(event_data->data, payload_start, payload_size);
@@ -384,6 +715,13 @@ static umodem_event_t quectel_m65_handle_qmtrecv(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
+/** @brief Main URC handler for Quectel M65 modem.
+ *
+ * @param buf Buffer containing the URC message
+ * @param len Length of the buffer
+ * 
+ * @return umodem_event_t representing the event, or zeroed struct if unhandled
+ */
 static umodem_event_t quectel_m65_handle_urc(const char* buf, size_t len) {
   if (UMODEM_MEMMEM(buf, len, "+PDP DEACT", 11))
     return quectel_m65_handle_pdp_deact(buf, len);
@@ -411,16 +749,14 @@ static umodem_event_t quectel_m65_handle_urc(const char* buf, size_t len) {
   return (umodem_event_t){0};
 }
 
-static int is_valid_hostname(const char* host, size_t len) {
-  if (!host || len == 0) return 0;
-  for (size_t i = 0; i < len; i++) {
-    char c = host[i];
-    if (c == '"' || c == '\r' || c == '\n' || c == ',')
-      return 0; // unsafe for AT command
-  }
-  return 1;
-}
+/*======================================================================
+ *                          SOCKET DRIVER API
+ *====================================================================*/
 
+/** @brief Initialize socket functionality on the Quectel M65 modem.
+ *
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_sock_init(void) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
 
@@ -462,6 +798,10 @@ static umodem_result_t quectel_m65_sock_init(void) {
   return UMODEM_ERR;
 }
 
+/** @brief Deinitialize socket functionality on the Quectel M65 modem.
+ *
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_sock_deinit(void) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
   if (!g_data_connected) return UMODEM_OK;
@@ -474,6 +814,11 @@ static umodem_result_t quectel_m65_sock_deinit(void) {
   return UMODEM_ERR;
 }
 
+/** @brief Create a new socket on the Quectel M65 modem.
+ *
+ * @param type Socket type (UMODEM_SOCK_TCP or UMODEM_SOCK_UDP)
+ * @return Socket file descriptor on success, -1 on failure
+ */
 static int quectel_m65_sock_create(umodem_sock_type_t type) {
   if (type != UMODEM_SOCK_TCP && type != UMODEM_SOCK_UDP) return -1;
   for (int i = 0; i < QUECTEL_M65_MAX_SOCKETS; i++) {
@@ -487,6 +832,16 @@ static int quectel_m65_sock_create(umodem_sock_type_t type) {
   return -1; // No available sockets
 }
 
+/** @brief Connect a socket to a remote host on the Quectel M65 modem.
+ *
+ * @param sockfd Socket file descriptor
+ * @param host Remote host (IP address or hostname)
+ * @param host_len Length of the host string
+ * @param port Remote port
+ * @param timeout_ms Connection timeout in milliseconds (0 for no wait)
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_sock_connect(int sockfd, const char* host,
     size_t host_len, uint16_t port, uint32_t timeout_ms) {
   if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS || !host || host_len == 0)
@@ -523,6 +878,12 @@ static umodem_result_t quectel_m65_sock_connect(int sockfd, const char* host,
   return UMODEM_TIMEOUT;
 }
 
+/** @brief Close a socket on the Quectel M65 modem.
+ *
+ * @param sockfd Socket file descriptor
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_sock_close(int sockfd) {
   if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS) return UMODEM_PARAM;
 
@@ -542,6 +903,14 @@ static umodem_result_t quectel_m65_sock_close(int sockfd) {
   return result;
 }
 
+/** @brief Send data over a socket on the Quectel M65 modem.
+ *
+ * @param sockfd Socket file descriptor
+ * @param data Pointer to data to send
+ * @param len Length of data to send
+ * 
+ * @return Number of bytes sent on success, -1 on failure
+ */
 static int quectel_m65_sock_send(int sockfd, const uint8_t* data, size_t len) {
   if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS || !data || len == 0)
     return -1;
@@ -553,7 +922,7 @@ static int quectel_m65_sock_send(int sockfd, const uint8_t* data, size_t len) {
 
   char cmd[40];
   int written =
-      snprintf(cmd, sizeof(cmd), "AT+QISEND=%d,%zu\r", sockfd - 1, len);
+      snprintf(cmd, sizeof(cmd), "AT+QISEND=%d,%u\r", sockfd - 1, len);
   if (written < 0 || written >= (int)sizeof(cmd)) return -1;
 
   if (umodem_at_send(cmd, NULL, 0, QISEND_CMD_TIMEOUT_MS) != UMODEM_OK)
@@ -565,6 +934,14 @@ static int quectel_m65_sock_send(int sockfd, const uint8_t* data, size_t len) {
   return -1;
 }
 
+/** @brief Receive data from a socket on the Quectel M65 modem.
+ *
+ * @param sockfd Socket file descriptor
+ * @param buf Buffer to store received data
+ * @param len Length of the buffer
+ * 
+ * @return Number of bytes received on success, -1 on failure
+ */
 static int quectel_m65_sock_recv(int sockfd, uint8_t* buf, size_t len) {
   if (sockfd <= 0 || sockfd > QUECTEL_M65_MAX_SOCKETS || !buf || len == 0)
     return -1;
@@ -576,58 +953,75 @@ static int quectel_m65_sock_recv(int sockfd, uint8_t* buf, size_t len) {
 
   char cmd[32];
   int written =
-      snprintf(cmd, sizeof(cmd), "AT+QIRD=0,1,%d,%zu\r", sockfd - 1, read_len);
+      snprintf(cmd, sizeof(cmd), "AT+QIRD=0,1,%d,%u\r", sockfd - 1, read_len);
   if (written < 0 || written >= (int)sizeof(cmd)) return -1;
 
-  char response[QIRD_RESPONSE_BUF_SIZE] = {0};
-  if (umodem_at_send(cmd, response, sizeof(response), QIRD_TIMEOUT_MS) !=
-      UMODEM_OK)
+  char* response = umodem_hal_alloc(QIRD_RESPONSE_BUF_SIZE);
+  memset(response, 0, QIRD_RESPONSE_BUF_SIZE);
+  if (!response) return -1;
+
+  if (umodem_at_send(cmd, response, QIRD_RESPONSE_BUF_SIZE, QIRD_TIMEOUT_MS) !=
+      UMODEM_OK) {
+    umodem_hal_free(response);
     return -1;
+  }
 
   // Parse: +QIRD: <remote>,<proto>,<data_len>
-  char* qird = UMODEM_MEMMEM(response, sizeof(response), "+QIRD:", 6);
-  if (!qird) return 0;
+  char* qird = UMODEM_MEMMEM(response, QIRD_RESPONSE_BUF_SIZE, "+QIRD:", 6);
+  if (!qird) {
+    umodem_hal_free(response);
+    return 0;
+  }
 
   size_t qird_len = response + QIRD_RESPONSE_BUF_SIZE - qird;
   char* comma = memchr(qird, ',', qird_len);
-  if (!comma) return 0;
+  if (!comma) {
+    umodem_hal_free(response);
+    return 0;
+  }
 
   size_t remaining = response + QIRD_RESPONSE_BUF_SIZE - (comma + 1);
   comma = memchr(comma + 1, ',', remaining);
-  if (!comma) return 0;
+  if (!comma) {
+    umodem_hal_free(response);
+    return 0;
+  }
 
   int data_len = 0;
   if (!UMODEM_STRTOI(comma + 1, 0, (int)QIRD_MAX_RECV_LEN, &data_len) ||
-      data_len <= 0)
+      data_len <= 0) {
+    umodem_hal_free(response);
     return 0;
+  }
 
   // Find start of data: first \r\n after header
   char* header_end = UMODEM_MEMMEM(qird, qird_len, "\r\n", 2);
-  if (!header_end) return 0;
+  if (!header_end) {
+    umodem_hal_free(response);
+    return 0;
+  }
 
   uint8_t* data_start = (uint8_t*)(header_end + 2); // skip \r\n
   if ((uintptr_t)data_start + data_len >
-      (uintptr_t)response + QIRD_RESPONSE_BUF_SIZE)
+      (uintptr_t)response + QIRD_RESPONSE_BUF_SIZE) {
+    umodem_hal_free(response);
     return -1;
+  }
 
+  umodem_hal_free(response);
   size_t copy_len = (data_len < len) ? (size_t)data_len : len;
   memcpy(buf, data_start, copy_len);
   return (int)copy_len;
 }
 
-static uint16_t find_mqtt_message_id(
-    int sockfd, const char* topic, size_t topic_len) {
-  mqtt_message_t* cur = g_mqtt_messages;
-  while (cur) {
-    if (UMODEM_MEMMEM(cur->event_data->topic, cur->event_data->topic_len, topic,
-            topic_len) &&
-        cur->event_data->sockfd == sockfd)
-      return cur->event_data->id;
-    cur = cur->next;
-  }
-  return 0;
-}
+/*======================================================================
+ *                              MQTT DRIVER
+ *====================================================================*/
 
+/** @brief Initialize MQTT functionality on the Quectel M65 modem.
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_init(void) {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
 
@@ -648,6 +1042,10 @@ static umodem_result_t quectel_m65_mqtt_init(void) {
   return UMODEM_OK;
 }
 
+/** @brief Deinitialize MQTT functionality on the Quectel M65 modem.
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_deinit() {
   if (!g_sim_inserted) return UMODEM_SIM_NOT_INSERTED;
 
@@ -655,9 +1053,9 @@ static umodem_result_t quectel_m65_mqtt_deinit() {
   while (cur) {
     mqtt_message_t* next = cur->next;
 
-    if (cur->event_data && cur->event_data->data) free(cur->event_data->data);
-    if (cur->event_data) free(cur->event_data);
-    free(cur);
+    if (cur->event_data && cur->event_data->data) umodem_hal_free(cur->event_data->data);
+    if (cur->event_data) umodem_hal_free(cur->event_data);
+    umodem_hal_free(cur);
 
     cur = next;
   }
@@ -666,6 +1064,19 @@ static umodem_result_t quectel_m65_mqtt_deinit() {
   return UMODEM_OK;
 }
 
+/**
+ * @brief Establish an MQTT connection.
+ *
+ * Performs configuration of MQTT session parameters (keepalive, timeout,
+ * will message, etc.) and opens a connection to the broker.
+ *
+ * @param host  Broker hostname or IP
+ * @param port  Broker port number
+ * @param opts  MQTT connection options (client ID, credentials, etc.)
+ *
+ * @return
+ *   MQTT socket index (>0) on success, -1 on error
+ */
 static int quectel_m65_mqtt_connect(
     const char* host, uint16_t port, const umodem_mqtt_connect_opts_t* opts) {
   if (!g_mqtt_initialized) return -1;
@@ -716,7 +1127,8 @@ static int quectel_m65_mqtt_connect(
 
   snprintf(cmd, sizeof(cmd), "AT+QMTOPEN=%d,\"%s\",%d\r", connection_index,
       host, port);
-  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK) return -1;
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
+    return -1;
 
   // Wait QMTOPEN result
   uint32_t start = umodem_hal_millis();
@@ -732,7 +1144,8 @@ static int quectel_m65_mqtt_connect(
   snprintf(cmd, sizeof(cmd), "AT+QMTCONN=%d,\"%s\",\"%s\",\"%s\"\r",
       connection_index, opts->client_id, !opts->username ? "" : opts->username,
       !opts->password ? "" : opts->password);
-  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK) return -1;
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
+    return -1;
 
   // Wait QMTCONN result
   start = umodem_hal_millis();
@@ -747,6 +1160,12 @@ static int quectel_m65_mqtt_connect(
   return connection_index + 1;
 }
 
+/** @brief Disconnect an MQTT connection.
+ * 
+ * @param sockfd MQTT socket index
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_disconnect(int sockfd) {
   if (!g_mqtt_initialized || sockfd <= 0 || sockfd > 6 ||
       !g_mqtt_conns[sockfd - 1].sock.connected)
@@ -754,12 +1173,25 @@ static umodem_result_t quectel_m65_mqtt_disconnect(int sockfd) {
 
   char cmd[16];
   snprintf(cmd, sizeof(cmd), "AT+QMTDISC=%d\r", sockfd - 1);
-  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK) return UMODEM_ERR;
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
+    return UMODEM_ERR;
 
   g_mqtt_conns[sockfd - 1].sock.connected = 0;
   return UMODEM_OK;
 }
 
+/** @brief Publish an MQTT message.
+ * 
+ * @param sockfd MQTT socket index
+ * @param topic Topic string
+ * @param topic_len Length of the topic string
+ * @param payload Pointer to message payload
+ * @param len Length of the message payload
+ * @param qos Quality of Service level
+ * @param retain Retain flag
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_publish(int sockfd, const char* topic,
     size_t topic_len, const void* payload, size_t len, umodem_mqtt_qos_t qos,
     int retain) {
@@ -773,17 +1205,26 @@ static umodem_result_t quectel_m65_mqtt_publish(int sockfd, const char* topic,
 
   snprintf(cmd, sizeof(cmd), "AT+QMTPUB=%d,%d,%d,%d,\"%s\"\r", sockfd - 1, id,
       qos, retain, topic);
-  if (umodem_at_send(cmd, NULL, 0, 1000) != UMODEM_OK)
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) != UMODEM_OK)
     return UMODEM_ERR;
 
   if (umodem_hal_send(payload, len) > 0) {
     char ctrl_z[2] = {0x1a, 0x0};
-    return umodem_at_send(ctrl_z, NULL, 0, 1000);
+    return umodem_at_send(ctrl_z, NULL, 0, UMODEM_CMD_TIMEOUT_MS);
   }
 
   return UMODEM_ERR;
 }
 
+/** @brief Subscribe to an MQTT topic.
+ * 
+ * @param sockfd MQTT socket index
+ * @param topic Topic string
+ * @param topic_len Length of the topic string
+ * @param qos Quality of Service level
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_subscribe(
     int sockfd, const char* topic, size_t topic_len, umodem_mqtt_qos_t qos) {
   umodem_result_t ret = UMODEM_ERR;
@@ -797,11 +1238,20 @@ static umodem_result_t quectel_m65_mqtt_subscribe(
   char cmd[128] = {0};
   snprintf(cmd, sizeof(cmd), "AT+QMTSUB=%d,%d,\"%s\",%d\r", sockfd - 1, id,
       topic, qos);
-  if (umodem_at_send(cmd, NULL, 0, 1000) == UMODEM_OK) ret = UMODEM_OK;
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) == UMODEM_OK)
+    ret = UMODEM_OK;
 
   return ret;
 }
 
+/** @brief Unsubscribe from an MQTT topic.
+ * 
+ * @param sockfd MQTT socket index
+ * @param topic Topic string
+ * @param topic_len Length of the topic string
+ * 
+ * @return UMODEM_OK on success, error code otherwise
+ */
 static umodem_result_t quectel_m65_mqtt_unsubscribe(
     int sockfd, const char* topic, size_t topic_len) {
   umodem_result_t ret = UMODEM_ERR;
@@ -814,125 +1264,25 @@ static umodem_result_t quectel_m65_mqtt_unsubscribe(
 
   char cmd[128] = {0};
   snprintf(cmd, sizeof(cmd), "AT+QMTUNS=%d,%d,\"%s\"\r", sockfd - 1, id, topic);
-  if (umodem_at_send(cmd, NULL, 0, 1000) == UMODEM_OK) ret = UMODEM_OK;
+  if (umodem_at_send(cmd, NULL, 0, UMODEM_CMD_TIMEOUT_MS) == UMODEM_OK)
+    ret = UMODEM_OK;
 
   umodem_event_mqtt_data_t* event_data = mqtt_pop_message(id);
-  if (event_data && event_data->data) free(event_data->data);
-  if (event_data) free(event_data);
+  if (event_data && event_data->data) umodem_hal_free(event_data->data);
+  if (event_data) umodem_hal_free(event_data);
 
   return ret;
 }
 
-static uint16_t mqtt_add_message(uint8_t sockfd, const char* topic,
-    size_t topic_len, const uint8_t* payload, size_t len, uint8_t type) {
-  static uint16_t id = 0;
+/*======================================================================
+ *                              DRIVER REGISTRATION
+ *====================================================================*/
 
-  umodem_event_mqtt_data_t* mqtt_event_data =
-      calloc(sizeof(umodem_event_mqtt_data_t), 1);
-  if (!mqtt_event_data) return 0;
-
-  mqtt_event_data->sockfd = sockfd;
-  mqtt_event_data->topic = topic;
-  mqtt_event_data->topic_len = topic_len;
-  mqtt_event_data->data_len = len;
-
-  uint8_t* msg_payload = NULL;
-  if (payload && len > 0) {
-    msg_payload = calloc(len, 1);
-    if (!msg_payload) {
-      free(mqtt_event_data);
-      return 0;
-    }
-
-    memcpy(msg_payload, payload, len);
-    mqtt_event_data->data = msg_payload;
-  }
-
-  mqtt_message_t* mqtt_message = calloc(sizeof(mqtt_message_t), 1);
-  if (!mqtt_message) {
-    free(mqtt_event_data);
-    if (msg_payload) free(msg_payload);
-    return 0;
-  }
-  mqtt_message->next = NULL;
-  mqtt_message->event_data = mqtt_event_data;
-
-  id = id == 65535 ? 1 : id + 1;
-  if (!g_mqtt_messages) {
-    mqtt_event_data->id = id;
-    g_mqtt_messages = mqtt_message;
-  } else {
-    mqtt_event_data->id = id;
-    g_mqtt_messages->next = mqtt_message;
-  }
-
-  return id;
-}
-
-static umodem_event_mqtt_data_t* mqtt_pop_message(uint16_t id) {
-  umodem_event_mqtt_data_t* event_data = NULL;
-
-  mqtt_message_t* prev = NULL;
-  mqtt_message_t* cur = g_mqtt_messages;
-  while (cur) {
-    if (cur->event_data->id == id) {
-      event_data = cur->event_data;
-
-      if (prev)
-        prev->next = cur->next;
-      else
-        g_mqtt_messages = cur->next;
-
-      free(cur);
-      break;
-    }
-
-    prev = cur;
-    cur = cur->next;
-  }
-
-  return event_data;
-}
-
-static umodem_event_mqtt_data_t* mqtt_get_message(uint16_t id) {
-  umodem_event_mqtt_data_t* event_data = NULL;
-
-  mqtt_message_t* cur = g_mqtt_messages;
-  while (cur) {
-    if (cur->event_data->id == id) return cur->event_data;
-    cur = cur->next;
-  }
-
-  return event_data;
-}
-
-static umodem_event_mqtt_data_t* mqtt_get_message_by_topic(
-    const char* topic, size_t topic_len) {
-  umodem_event_mqtt_data_t* event_data = NULL;
-
-  mqtt_message_t* cur = g_mqtt_messages;
-  while (cur) {
-    if (UMODEM_MEMMEM(cur->event_data->topic, cur->event_data->topic_len, topic,
-            topic_len))
-      return cur->event_data;
-    cur = cur->next;
-  }
-
-  return event_data;
-}
-
-static void umodem_event_mqtt_pub_dtor(umodem_event_t* self) {
-  umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*)self->data;
-  free(event_data->data);
-  free(event_data);
-}
-
-static void umodem_event_mqtt_sub_dtor(umodem_event_t* self) {
-  umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*)self->data;
-  free(event_data->data);
-  event_data->data = NULL;
-}
-
+/**
+ * @brief Quectel M65 socket driver structure.
+ *
+ * Provides references to socket driver interface functions.
+ */
 const umodem_sock_driver_t quectel_m65_sock_driver = {
     .sock_init = quectel_m65_sock_init,
     .sock_deinit = quectel_m65_sock_deinit,
@@ -943,6 +1293,11 @@ const umodem_sock_driver_t quectel_m65_sock_driver = {
     .sock_recv = quectel_m65_sock_recv,
 };
 
+/**
+ * @brief Quectel M65 MQTT driver structure.
+ *
+ * Provides references to MQTT driver interface functions.
+ */
 const umodem_mqtt_driver_t quectel_m65_mqtt_driver = {
     .mqtt_init = quectel_m65_mqtt_init,
     .mqtt_deinit = quectel_m65_mqtt_deinit,
@@ -953,6 +1308,12 @@ const umodem_mqtt_driver_t quectel_m65_mqtt_driver = {
     .mqtt_unsubscribe = quectel_m65_mqtt_unsubscribe,
 };
 
+/**
+ * @brief Quectel M65 driver structure.
+ *
+ * Registers the modem implementation with uModem core. Provides references
+ * to socket and MQTT driver interfaces.
+ */
 static umodem_driver_t s_quectel_m65_driver = {
     .init = quectel_m65_init,
     .deinit = quectel_m65_deinit,
@@ -966,4 +1327,9 @@ static umodem_driver_t s_quectel_m65_driver = {
     .ppp_driver = NULL,
 };
 
+/**
+ * @brief Global reference to active modem driver.
+ *
+ * Automatically used by the uModem core to invoke modem-specific handlers.
+ */
 umodem_driver_t* g_umodem_driver = &s_quectel_m65_driver;

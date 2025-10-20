@@ -2,9 +2,17 @@
 #include <cstring>
 #include <signal.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "umodem.h"
 #include "umodem_mqtt.h"
+
+// Retry configuration
+#define MQTT_CONNECT_MAX_RETRIES 5
+#define MQTT_CONNECT_RETRY_DELAY_MS 2000 // 2 seconds
+
+#define MQTT_SUBSCRIBE_MAX_RETRIES 3
+#define MQTT_SUBSCRIBE_RETRY_DELAY_MS 1000 // 1 second
 
 using namespace std::chrono;
 
@@ -42,8 +50,9 @@ static void on_umodem_event(umodem_event_t* event, void* user_ctx) {
 static void sig_handler(int signo) {
   printf("\nSignal received, shutting down...\n");
 
-  // Cleanup
-  umodem_mqtt_unsubscribe(sockfd, subs_topic, sizeof(subs_topic));
+  if (sockfd > 0) {
+    umodem_mqtt_unsubscribe(sockfd, subs_topic, sizeof(subs_topic));
+  }
   umodem_mqtt_deinit();
   umodem_deinit();
   umodem_power_off();
@@ -125,20 +134,49 @@ int main() {
       .disable_clean_session = 0,
   };
 
-  sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
+  // --- Retry MQTT Connection ---
+  int retry_count = 0;
+  sockfd = -1;
+  while (retry_count < MQTT_CONNECT_MAX_RETRIES) {
+    sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
+    if (sockfd > 0) {
+      printf("Connected to MQTT Broker\n");
+      break;
+    }
+    retry_count++;
+    printf("MQTT connection failed (attempt %d/%d). Retrying in %d ms...\n",
+        retry_count, MQTT_CONNECT_MAX_RETRIES, MQTT_CONNECT_RETRY_DELAY_MS);
+    usleep(MQTT_CONNECT_RETRY_DELAY_MS * 1000);
+  }
+
   if (sockfd <= 0) {
-    printf("Failed to connect MQTT\n");
+    printf("Failed to connect to MQTT after %d attempts.\n",
+        MQTT_CONNECT_MAX_RETRIES);
     umodem_mqtt_deinit();
     umodem_deinit();
     umodem_power_off();
     return -1;
   }
 
-  printf("Connected to MQTT Broker\n");
+  // --- Retry MQTT Subscription ---
+  retry_count = 0;
+  int sub_result = UMODEM_ERR;
+  while (retry_count < MQTT_SUBSCRIBE_MAX_RETRIES) {
+    sub_result = umodem_mqtt_subscribe(
+        sockfd, subs_topic, sizeof(subs_topic), UMODEM_MQTT_QOS_2);
+    if (sub_result == UMODEM_OK) {
+      printf("Successfully subscribed to topic: %s\n", subs_topic);
+      break;
+    }
+    retry_count++;
+    printf("MQTT subscribe failed (attempt %d/%d). Retrying in %d ms...\n",
+        retry_count, MQTT_SUBSCRIBE_MAX_RETRIES, MQTT_SUBSCRIBE_RETRY_DELAY_MS);
+    usleep(MQTT_SUBSCRIBE_RETRY_DELAY_MS * 1000);
+  }
 
-  if (umodem_mqtt_subscribe(sockfd, subs_topic, sizeof(subs_topic),
-          UMODEM_MQTT_QOS_2) != UMODEM_OK) {
-    printf("Failed to subscribe to topic %s\n", subs_topic);
+  if (sub_result != UMODEM_OK) {
+    printf("Failed to subscribe to topic after %d attempts.\n",
+        MQTT_SUBSCRIBE_MAX_RETRIES);
 
     if (umodem_mqtt_disconnect(sockfd) != UMODEM_OK)
       printf("Failed to disconnect MQTT\n");
@@ -151,6 +189,7 @@ int main() {
     return -1;
   }
 
+  // Wait for 3 messages
   while (received_data < 3) {
     umodem_poll();
     usleep(1000);

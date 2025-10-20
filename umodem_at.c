@@ -4,6 +4,7 @@
 #include "umodem_core.h"
 #include "umodem_at.h"
 #include "umodem_buffer.h"
+
 #include "port/umodem_port.h"
 
 void umodem_at_init()
@@ -86,7 +87,8 @@ umodem_result_t umodem_at_send(const char *cmd, char *response, size_t resp_len,
     if (match_len > 0)
     {
       size_t total_len = (size_t)pos;
-      uint8_t *buf = (uint8_t *)calloc(total_len + match_len + 1, 1);
+      uint8_t *buf = (uint8_t *)umodem_hal_alloc(total_len + match_len + 1);
+      memset(buf, 0, total_len + match_len + 1);
       if (!buf)
       {
         umodem_hal_unlock();
@@ -137,7 +139,7 @@ umodem_result_t umodem_at_send(const char *cmd, char *response, size_t resp_len,
       }
 
       umodem_hal_unlock();
-      free(buf);
+      umodem_hal_free(buf);
       return result;
     }
 

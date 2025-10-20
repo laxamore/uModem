@@ -2,9 +2,14 @@
 #include <cstring>
 #include <signal.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "umodem.h"
 #include "umodem_mqtt.h"
+
+// Define retry parameters
+#define MQTT_CONNECT_MAX_RETRIES 5
+#define MQTT_CONNECT_RETRY_DELAY_MS 2000 // 2 seconds
 
 using namespace std::chrono;
 
@@ -17,7 +22,8 @@ static void on_umodem_event(umodem_event_t* event, void* user_ctx) {
     break;
   }
   case UMODEM_EVENT_MQTT_DATA_PUBLISHED: {
-    umodem_event_mqtt_data_t* event_data = (umodem_event_mqtt_data_t*) umodem_get_event_data(event);
+    umodem_event_mqtt_data_t* event_data =
+        (umodem_event_mqtt_data_t*)umodem_get_event_data(event);
     printf("MQTT message published on fd %d\n", event_data->sockfd);
     break;
   }
@@ -91,7 +97,7 @@ int main() {
     umodem_mqtt_deinit();
     umodem_deinit();
     umodem_power_off();
-    return 0;
+    return -1;
   }
 
   printf("MQTT Initialized\n");
@@ -110,16 +116,31 @@ int main() {
       .disable_clean_session = 0,
   };
 
-  int sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
+  int sockfd = -1;
+  int retry_count = 0;
+
+  while (retry_count < MQTT_CONNECT_MAX_RETRIES) {
+    sockfd = umodem_mqtt_connect("broker.hivemq.com", 1883, &opts);
+    if (sockfd > 0) {
+      printf("Connected to MQTT Broker\n");
+      break;
+    }
+
+    retry_count++;
+    printf("MQTT connection failed (attempt %d/%d). Retrying in %d ms...\n",
+        retry_count, MQTT_CONNECT_MAX_RETRIES, MQTT_CONNECT_RETRY_DELAY_MS);
+
+    usleep(MQTT_CONNECT_RETRY_DELAY_MS * 1000); // usleep takes microseconds
+  }
+
   if (sockfd <= 0) {
-    printf("Failed to connect MQTT\n");
+    printf("Failed to connect to MQTT after %d attempts.\n",
+        MQTT_CONNECT_MAX_RETRIES);
     umodem_mqtt_deinit();
     umodem_deinit();
     umodem_power_off();
-    return 0;
+    return -1;
   }
-
-  printf("Connected to MQTT Broker\n");
 
   uint64_t start = current_millis() - 5000;
   int count = 0;
@@ -130,8 +151,8 @@ int main() {
       start = now;
       char payload[] = "hello_world";
       char topic[] = "test/umodem";
-      if (umodem_mqtt_publish(sockfd, topic, sizeof(topic), payload, sizeof(payload),
-              UMODEM_MQTT_QOS_2, 0))
+      if (umodem_mqtt_publish(sockfd, topic, sizeof(topic), payload,
+              sizeof(payload), UMODEM_MQTT_QOS_2, 0))
         printf("Failed to publish MQTT message.\n");
     }
     umodem_poll();

@@ -9,11 +9,17 @@
 #ifndef uMODEM_CONFIG_H_
 #define uMODEM_CONFIG_H_
 
+#if __has_include("umodem_user_config.h")
+    #include "umodem_user_config.h"
+#endif
+
 /* Select your modem vendor/family.
  * Uncomment ONE of the following:
  */
-#ifndef UMODEM_MODEM_QUECTEL_M65
-#define UMODEM_MODEM_QUECTEL_M65
+#if !defined(UMODEM_QUECTEL_M65) && \
+    !defined(UMODEM_SIMCOM_SIM800)
+#define UMODEM_QUECTEL_M65
+// #define UMODEM_SIMCOM_SIM800
 #endif
 
 /* Size of the RX ring buffer (bytes). */

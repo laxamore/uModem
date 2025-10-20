@@ -82,6 +82,22 @@ extern "C"
    */
   void umodem_hal_unlock(void);
 
+  /**
+   * @brief Allocate memory block.
+   *
+   * @param size Size of memory block in bytes.
+   * 
+   * @return Pointer to allocated memory, or NULL on failure.
+   */
+  void* umodem_hal_alloc(size_t size);
+
+  /**
+   * @brief Free memory block.
+   *
+   * @param ptr Pointer to memory block to free.
+   */
+  void umodem_hal_free(void* ptr);
+
 #ifdef __cplusplus
 }
 #endif

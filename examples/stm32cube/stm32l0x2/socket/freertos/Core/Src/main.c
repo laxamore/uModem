@@ -391,26 +391,31 @@ void StartDefaultTask(void *argument)
  * @param argument: Not used
  * @retval None
  */
-static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
+static void on_umodem_event(umodem_event_t *event, void *user_ctx)
 {
-  switch (event_info->event)
+  umodem_event_flag_t event_flag = umodem_event_get_flag(event);
+  switch (event_flag)
   {
-  case UMODEM_EVENT_SOCK_CONNECTED:
-    printf("Socket connected! on fd %d\n", *(int *)event_info->event_data);
+  case UMODEM_EVENT_SOCK_CONNECTED: {
+    void *event_data = umodem_get_event_data(event);
+    printf("Socket connected! on fd %d\n", *(int *)event_data);
     break;
+  }
   case UMODEM_EVENT_SOCK_DATA_RECEIVED:
   {
-    printf("Socket data received on fd %d\n", *(int *)event_info->event_data);
+    void *event_data = umodem_get_event_data(event);
+    printf("Socket data received on fd %d\n", *(int *)event_data);
 
     // Read data
-    char *buf = (char *)calloc(128, 1);
+    char *buf = (char *)pvPortMalloc(128);
+    memset(buf, 0, 128);
     if (buf == NULL)
     {
       printf("Memory allocation failed\n");
       return;
     }
 
-    int len = umodem_sock_recv(*(int *)event_info->event_data, buf, 128 - 1);
+    int len = umodem_sock_recv(*(int *)event_data, buf, 128 - 1);
     if (len > 0)
     {
       buf[len] = '\0';
@@ -418,7 +423,7 @@ static void on_umodem_event(umodem_event_info_t *event_info, void *user_ctx)
     }
     else
       printf("Receive error or no data\n");
-    free(buf);
+    vPortFree(buf);
     break;
   }
   case UMODEM_EVENT_SOCK_CLOSED:

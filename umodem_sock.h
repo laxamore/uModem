@@ -1,12 +1,12 @@
 #ifndef uMODEM_SOCK_H
 #define uMODEM_SOCK_H
 
+#include "umodem.h"
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
-
-#include "umodem_core.h"
 
   typedef enum
   {
