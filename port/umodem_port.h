@@ -4,8 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "umodem_config.h"
-
 #ifdef __cplusplus
 extern "C"
 {
